@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+"""collog: プロジェクト横断のSUMMARY/CHANGES/TODOをSQLiteで一元管理するCLI。
+
+- entries テーブル: SUMMARY/CHANGESを kind 列で区別して保持する追記専用ログ
+- todos テーブル: 完了マーク(UPDATE)が発生するため別テーブル
+
+日時はすべてこのスクリプトが自動生成する（呼び出し側が書式を指定する余地を作らない）。
+"""
+import argparse
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime
+
+DEFAULT_DB_PATH = os.path.expanduser("~/.collog/collog.db")
+
+
+def db_path():
+    return os.environ.get("COLLOG_DB", DEFAULT_DB_PATH)
+
+
+def get_conn():
+    path = db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('summary', 'change')),
+            created_at TEXT NOT NULL,
+            body TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS todos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            body TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS projects (
+            name TEXT PRIMARY KEY,
+            path TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    return conn
+
+
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def resolve_timestamp(at):
+    """--at が指定されていればそれを検証して使う。未指定ならnow()。
+
+    過去分の遡及登録（インポート等）のための抜け道だが、自由記述を許すと
+    「日時のはずが日付だけ」のような書式崩れが再発するため、フォーマットを
+    厳格に検証する。
+    """
+    if at is None:
+        return now()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(at, fmt)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    print(
+        f"エラー: --at の日時形式が不正です: '{at}' "
+        f"（'YYYY-MM-DD HH:MM' または 'YYYY-MM-DD HH:MM:SS' で指定してください）",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def read_body():
+    body = sys.stdin.read().strip()
+    if not body:
+        print("エラー: 標準入力から本文を読み込めませんでした（空です）", file=sys.stderr)
+        sys.exit(1)
+    return body
+
+
+def validate_body_headings(body):
+    """本文が'#'/'##'（collogが自動生成する見出し用に予約）を使っていないか検証する。
+
+    status/recent/changesは本文の前に`## [日時] ...`等の見出しを自動生成するため、
+    本文側が同じ階層(#/##)を使うと見出しが二重になり紛らわしい（実例あり）。
+    本文は'###'以下のみ使える、というルールで厳格に拒否する。
+    """
+    for line in body.split("\n"):
+        m = re.match(r"^(#{1,2})\s", line)
+        if m:
+            print(
+                f"エラー: 本文に '{m.group(1)}' から始まる見出しが含まれています"
+                f"（'{line.strip()[:40]}'）。"
+                f"'#'/'##' はcollogが自動生成する見出し用に予約されているため、"
+                f"本文では '###' 以下を使ってください。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+
+def require_registered_project(conn, project):
+    row = conn.execute("SELECT 1 FROM projects WHERE name = ?", (project,)).fetchone()
+    if row is None:
+        print(
+            f"エラー: プロジェクト '{project}' は未登録です。"
+            f"先に `collog init {project} [パス]` を実行してください。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def cmd_init(args):
+    path = os.path.abspath(args.path) if args.path else os.getcwd()
+    conn = get_conn()
+    existing = conn.execute(
+        "SELECT path FROM projects WHERE name = ?", (args.project,)
+    ).fetchone()
+    ts = now()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (args.project, path, ts, ts),
+        )
+        conn.commit()
+        print(f"OK: プロジェクト '{args.project}' を登録しました (path: {path})")
+    else:
+        conn.execute(
+            "UPDATE projects SET path = ?, updated_at = ? WHERE name = ?",
+            (path, ts, args.project),
+        )
+        conn.commit()
+        if existing[0] != path:
+            print(f"OK: プロジェクト '{args.project}' のパスを更新しました ({existing[0]} → {path})")
+        else:
+            print(f"OK: プロジェクト '{args.project}' は既に登録済みです (path: {path})")
+    if not os.path.isdir(path):
+        print(f"警告: パス '{path}' はディレクトリとして存在しません", file=sys.stderr)
+
+
+def cmd_projects(args):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT name, path, created_at, updated_at FROM projects ORDER BY name"
+    ).fetchall()
+    if not rows:
+        print("(登録済みプロジェクトはありません)")
+        return
+    for name, path, created_at, updated_at in rows:
+        print(f"{name}\t{path}\t(登録: {created_at} / 更新: {updated_at})")
+
+
+def cmd_add_entry(args):
+    body = read_body()
+    validate_body_headings(body)
+    conn = get_conn()
+    require_registered_project(conn, args.project)
+    conn.execute(
+        "INSERT INTO entries (project, kind, created_at, body) VALUES (?, ?, ?, ?)",
+        (args.project, args.kind, resolve_timestamp(args.at), body),
+    )
+    conn.commit()
+    print(f"OK: [{args.kind}] {args.project} を記録しました")
+
+
+def cmd_add_todo(args):
+    body = read_body()
+    conn = get_conn()
+    require_registered_project(conn, args.project)
+    cur = conn.execute(
+        "INSERT INTO todos (project, created_at, body) VALUES (?, ?, ?)",
+        (args.project, resolve_timestamp(args.at), body),
+    )
+    conn.commit()
+    print(f"OK: TODO #{cur.lastrowid} を追加しました ({args.project})")
+
+
+def cmd_finish_todo(args):
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE todos SET completed_at = ? WHERE id = ? AND project = ? AND completed_at IS NULL",
+        (resolve_timestamp(args.at), args.id, args.project),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        print("エラー: 該当する未完了TODOが見つかりません", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: TODO #{args.id} ({args.project}) を完了にしました")
+
+
+def cmd_todos(args):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, created_at, completed_at, body FROM todos WHERE project = ? ORDER BY created_at",
+        (args.project,),
+    ).fetchall()
+    shown = 0
+    for todo_id, created_at, completed_at, body in rows:
+        if not args.all and completed_at is not None:
+            continue
+        mark = "x" if completed_at else " "
+        # GFMのタスクリスト記法（- [ ]/- [x]）。素の「[ ]」はMarkdown上ただの地の文で、
+        # 空行の無い連続行が1段落にmergeされてしまう（mdcat等で確認済み）ため、
+        # 各項目が独立したリスト項目として扱われるよう「- 」を必ず付ける。
+        header = f"- [{mark}]" if args.no_id else f"- [{mark}] #{todo_id}"
+        lines = body.split("\n")
+        print(f"{header} {lines[0]}")
+        for line in lines[1:]:
+            # 継続行はリストマーカー「- 」と同じ幅(2文字)で字下げし、同じ項目の続きとして扱わせる。
+            print(f"  {line}")
+        if len(lines) > 1:
+            print()
+        shown += 1
+    if shown == 0:
+        print(f"（{args.project} に該当するTODOはありません）")
+
+
+def _print_or_page(output):
+    """TTY出力かつ端末の行数を超える場合のみ$PAGER（既定less）に通す。
+
+    パイプ・リダイレクト時（非TTY）はそのまま標準出力へ書く。
+    """
+    if sys.stdout.isatty():
+        term_lines = shutil.get_terminal_size(fallback=(80, 24)).lines
+        if output.count("\n") + 1 > term_lines:
+            pager = os.environ.get("PAGER", "less")
+            result = subprocess.run(pager, input=output, text=True, shell=True)
+            if result.returncode == 0:
+                return
+            # ページャ起動に失敗した場合はそのまま標準出力へフォールバック
+    sys.stdout.write(output)
+
+
+def _fetch_entries(conn, project, kind, sort_col, ascending, limit):
+    """entriesから1プロジェクト分をkind絞り込み・並べ替え・（任意で）件数制限して取得する。
+
+    sort_colはargparseのchoicesで安全な値に限定済みの前提で、そのままSQLへ埋め込む。
+    """
+    direction = "ASC" if ascending else "DESC"
+    query = f"SELECT created_at, body FROM entries WHERE project = ? AND kind = ? ORDER BY {sort_col} {direction}"
+    params = [project, kind]
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    return conn.execute(query, params).fetchall()
+
+
+def _format_dated_entries(title, rows):
+    parts = [title, ""]
+    for created_at, body in rows:
+        parts.append(f"## {created_at}")
+        parts.append("")
+        parts.append(body.strip())
+        parts.append("")
+    return "\n".join(parts).rstrip("\n") + "\n"
+
+
+def _preview_paragraph(body, limit=400):
+    """本文から冒頭のプレビューを切り出す。(テキスト, 切り詰めたか) を返す。
+
+    空行区切りの段落を先頭から拾い、実質的な内容（見出しではない行）を
+    含む段落が現れるまでは見出しごと含めて進める（見出しだけの段落が
+    単独でプレビューになってしまう＝中身が見えない、という事態を防ぐため）。
+    そこまででlimit文字以内に収まればそれを使う。見つからない・長すぎる
+    場合はlimit文字付近の文末（「。」）で切る。
+    """
+    body = body.strip()
+    paragraphs = body.split("\n\n")
+    included = []
+    for para in paragraphs:
+        included.append(para)
+        has_content = any(
+            line.strip() and not re.match(r"^#{1,6}\s", line)
+            for line in para.split("\n")
+        )
+        if has_content:
+            break
+    preview = "\n\n".join(included).strip()
+    if len(preview) <= limit:
+        return preview, len(preview) < len(body)
+    cut = body.rfind("。", 0, limit)
+    cut = cut + 1 if cut != -1 else limit
+    return body[:cut].strip(), True
+
+
+def cmd_status(args):
+    conn = get_conn()
+
+    if args.project is None:
+        # 横断モード: 全プロジェクトの最新SUMMARYを1件ずつ、Markdownのプレビュー付きで一覧表示。
+        if args.sort == "id":
+            print("エラー: --sort id はプロジェクトを指定した時のみ使えます", file=sys.stderr)
+            sys.exit(1)
+        if args.n is not None or args.reverse:
+            print("エラー: -n/-r はプロジェクトを指定した時のみ使えます", file=sys.stderr)
+            sys.exit(1)
+        direction = "ASC" if args.asc else "DESC"
+        rows = conn.execute(
+            f"""
+            SELECT e.project, e.created_at, e.body
+            FROM entries e
+            WHERE e.kind = 'summary'
+              AND e.id = (
+                  -- created_atは秒精度のため同一project内で複数件が同じ値を
+                  -- 持ちうる。idは挿入順で必ず一意なので、created_at→idの順で
+                  -- タイブレークし、1projectにつき必ず1行だけ選ぶ。
+                  SELECT e2.id FROM entries e2
+                  WHERE e2.project = e.project AND e2.kind = 'summary'
+                  ORDER BY e2.created_at DESC, e2.id DESC
+                  LIMIT 1
+              )
+            ORDER BY {args.sort} {direction}
+            """
+        ).fetchall()
+        if not rows:
+            print("(記録なし)")
+            return
+
+        is_tty = sys.stdout.isatty()
+        parts = ["# collog status", ""]
+        for project, created_at, body in rows:
+            parts.append(f"## [{created_at}] {project}")
+            parts.append("")
+            if is_tty:
+                text, truncated = _preview_paragraph(body)
+                if truncated:
+                    text += " …"
+            else:
+                text = body.strip()
+            parts.append(text)
+            parts.append("")
+        _print_or_page("\n".join(parts).rstrip("\n") + "\n")
+        return
+
+    # プロジェクト指定モード: そのプロジェクトのSUMMARY履歴を表示（旧recent --kind summary相当）。
+    if args.sort == "project":
+        print("エラー: --sort project はプロジェクトを指定しない時のみ使えます", file=sys.stderr)
+        sys.exit(1)
+    limit = args.n if args.n is not None else 5
+    rows = _fetch_entries(conn, args.project, "summary", args.sort, args.asc, limit)
+    if not rows:
+        print(f"（{args.project} に記録はありません）")
+        return
+    if args.reverse:
+        rows = list(reversed(rows))
+    _print_or_page(_format_dated_entries(f"# collog status: {args.project}", rows))
+
+
+def cmd_changes(args):
+    conn = get_conn()
+    # changesは元々「全件を古い順」が既定（changelogを上から時系列で読む用途）だったため、
+    # --asc/--descを追加した後もその既定（昇順）を維持する。
+    rows = _fetch_entries(conn, args.project, "change", args.sort, not args.desc, args.n)
+    if not rows:
+        print(f"(記録なし: {args.project})", file=sys.stderr)
+        return
+    if args.reverse:
+        rows = list(reversed(rows))
+    _print_or_page(_format_dated_entries(f"# collog changes: {args.project}", rows))
+
+
+def cmd_help(args):
+    target = args._parser
+    subparsers_action = args._subparsers
+    for name in args.command:
+        if subparsers_action is None or name not in subparsers_action.choices:
+            print(f"エラー: 不明なサブコマンドです: {' '.join(args.command)}", file=sys.stderr)
+            sys.exit(1)
+        target = subparsers_action.choices[name]
+        subparsers_action = _find_subparsers_action(target)
+    target.print_help()
+
+
+def _find_subparsers_action(parser):
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="collog", description="プロジェクト横断トラッカー")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init", help="プロジェクトを登録する（既存なら path を更新）")
+    p.add_argument("project")
+    p.add_argument("path", nargs="?", default=None, help="省略時はカレントディレクトリ")
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("projects", help="登録済みプロジェクトの一覧")
+    p.set_defaults(func=cmd_projects)
+
+    at_help = "日時を指定して遡って記録する（'YYYY-MM-DD HH:MM[:SS]'形式。省略時は現在時刻）"
+
+    add_p = sub.add_parser("add", help="SUMMARY/CHANGES/TODOを記録する")
+    add_sub = add_p.add_subparsers(dest="add_target", required=True)
+
+    p = add_sub.add_parser("summary", help="標準入力の内容をSUMMARYとして記録")
+    p.add_argument("project")
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_add_entry, kind="summary")
+
+    p = add_sub.add_parser("change", help="標準入力の内容をCHANGESとして記録")
+    p.add_argument("project")
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_add_entry, kind="change")
+
+    p = add_sub.add_parser("todo", help="標準入力の内容をTODOとして追加")
+    p.add_argument("project")
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_add_todo)
+
+    finish_p = sub.add_parser("finish", help="TODOを完了にする")
+    finish_sub = finish_p.add_subparsers(dest="finish_target", required=True)
+
+    p = finish_sub.add_parser("todo", help="指定IDのTODOを完了にする")
+    p.add_argument("project")
+    p.add_argument("id", type=int)
+    p.add_argument("--at", default=None, help="完了日時を指定して遡って記録する（同上の形式）")
+    p.set_defaults(func=cmd_finish_todo)
+
+    list_p = sub.add_parser("list", help="TODO/CHANGESの一覧を表示する")
+    list_sub = list_p.add_subparsers(dest="list_target", required=True)
+
+    p = list_sub.add_parser("todos", help="TODO一覧（デフォルトは未完了のみ）")
+    p.add_argument("project")
+    p.add_argument("--all", action="store_true", help="完了分も含めて表示")
+    p.add_argument("--no-id", action="store_true",
+                    help="#id を表示しない（finish todoで指定する必要がない、閲覧目的の時向け）")
+    p.set_defaults(func=cmd_todos)
+
+    p = list_sub.add_parser("changes", help="CHANGESの一覧をMarkdown形式で表示")
+    p.add_argument("project")
+    p.add_argument("-n", type=int, default=None, help="表示件数（既定: 全件）")
+    p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
+                    help="並べ替えに使う列（既定: created_at）")
+    sort_dir = p.add_mutually_exclusive_group()
+    sort_dir.add_argument("--asc", action="store_true", help="昇順で表示（既定）")
+    sort_dir.add_argument("--desc", action="store_true", help="降順で表示")
+    p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転")
+    p.set_defaults(func=cmd_changes)
+
+    p = sub.add_parser("status", help="SUMMARYの状況を表示（省略時は全プロジェクト横断）")
+    p.add_argument("project", nargs="?", default=None,
+                    help="指定するとそのプロジェクトのSUMMARY履歴を表示（省略時は全プロジェクトの最新のみ）")
+    p.add_argument("-n", type=int, default=None, help="表示件数（project指定時のみ、既定5）")
+    p.add_argument("--sort", choices=["created_at", "project", "id"], default="created_at",
+                    help="並べ替えに使う列（project省略時: created_at/project、指定時: created_at/id）")
+    sort_dir = p.add_mutually_exclusive_group()
+    sort_dir.add_argument("--asc", action="store_true", help="昇順で表示")
+    sort_dir.add_argument("--desc", action="store_true", help="降順で表示（既定）")
+    p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転（project指定時のみ）")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
+    p.add_argument("command", nargs="*", default=[],
+                    help="ヘルプを見たいサブコマンド名（例: add summary。省略時は全体のヘルプ）")
+    p.set_defaults(func=cmd_help, _subparsers=sub, _parser=parser)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
