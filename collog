@@ -371,6 +371,68 @@ def cmd_changes(args):
     _print_or_page(_format_dated_entries(f"# collog changes: {args.project}", rows))
 
 
+def _match_snippet(body, keyword, context=80):
+    """本文中でkeywordが最初に現れる位置の前後を切り出す（大小文字は区別しない）。
+
+    改行等の空白は1つに畳んで1行のスニペットにする。前後が切れている場合は'…'を付ける。
+    """
+    idx = body.lower().find(keyword.lower())
+    if idx == -1:
+        # 呼び出し元でヒット確認済みの前提だが、念のためのフォールバック。
+        return " ".join(body.strip().split())[: context * 2]
+    start = max(0, idx - context)
+    end = min(len(body), idx + len(keyword) + context)
+    snippet = " ".join(body[start:end].split())
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(body) else ""
+    return f"{prefix}{snippet}{suffix}"
+
+
+def cmd_search(args):
+    conn = get_conn()
+    keyword_lower = args.keyword.lower()
+    kinds = [args.kind] if args.kind else ["summary", "change", "todo"]
+    matches = []  # (created_at, header, snippet)
+
+    entry_kinds = [k for k in kinds if k in ("summary", "change")]
+    if entry_kinds:
+        placeholders = ",".join("?" * len(entry_kinds))
+        query = f"SELECT created_at, kind, project, body FROM entries WHERE kind IN ({placeholders})"
+        params = list(entry_kinds)
+        if args.project:
+            query += " AND project = ?"
+            params.append(args.project)
+        for created_at, kind, project, body in conn.execute(query, params).fetchall():
+            if keyword_lower in body.lower():
+                header = f"## [{created_at}] {project} ({kind})"
+                matches.append((created_at, header, _match_snippet(body, args.keyword)))
+
+    if "todo" in kinds:
+        query = "SELECT id, created_at, completed_at, project, body FROM todos"
+        params = []
+        if args.project:
+            query += " WHERE project = ?"
+            params.append(args.project)
+        for todo_id, created_at, completed_at, project, body in conn.execute(query, params).fetchall():
+            if keyword_lower in body.lower():
+                mark = "x" if completed_at else " "
+                header = f"## [{created_at}] {project} (todo #{todo_id} [{mark}])"
+                matches.append((created_at, header, _match_snippet(body, args.keyword)))
+
+    if not matches:
+        print(f"（'{args.keyword}' に一致する記録はありません）")
+        return
+
+    matches.sort(key=lambda m: m[0], reverse=True)
+    parts = [f"# collog search: {args.keyword}", ""]
+    for _, header, snippet in matches:
+        parts.append(header)
+        parts.append("")
+        parts.append(snippet)
+        parts.append("")
+    _print_or_page("\n".join(parts).rstrip("\n") + "\n")
+
+
 def cmd_help(args):
     target = args._parser
     subparsers_action = args._subparsers
@@ -463,6 +525,22 @@ def build_parser():
     sort_dir.add_argument("--desc", action="store_true", help="降順で表示（既定）")
     p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転（project指定時のみ）")
     p.set_defaults(func=cmd_status)
+
+    search_p = sub.add_parser("search", help="本文にキーワードを含む記録を横断検索")
+    search_sub = search_p.add_subparsers(dest="search_target", required=True)
+
+    search_targets = [
+        ("summaries", "summary", "SUMMARYを検索"),
+        ("changes", "change", "CHANGESを検索"),
+        ("todos", "todo", "TODOを検索"),
+        ("all", None, "SUMMARY/CHANGES/TODOすべてを検索"),
+    ]
+    for name, kind, help_text in search_targets:
+        p = search_sub.add_parser(name, help=help_text)
+        p.add_argument("keyword")
+        p.add_argument("project", nargs="?", default=None,
+                        help="指定するとそのプロジェクトのみ検索（省略時は全プロジェクト横断）")
+        p.set_defaults(func=cmd_search, kind=kind)
 
     p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
     p.add_argument("command", nargs="*", default=[],
