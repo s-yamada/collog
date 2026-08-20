@@ -23,23 +23,27 @@ collog add change <project> [--at 日時]    # 標準入力の内容をCHANGES�
 collog add todo <project> [--at 日時]      # 標準入力の内容をTODOとして追加
 collog finish todo <project> <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list todos <project> [--all] [--no-id]  # TODO一覧（既定は未完了のみ）
-collog list changes <project> [-n] [--sort created_at|id] [--asc|--desc] [-r]
+collog list todos|todo <project> [--all] [--no-id]  # TODO一覧（既定は未完了のみ）
+collog list changes|change <project> [-n] [--sort created_at|id] [--asc|--desc] [-r]
                                            # CHANGESの一覧をMarkdown形式で表示
 
 collog status [project] [--sort ...] [--asc|--desc] [-n] [-r]
                                            # project省略時: 全プロジェクトの最新SUMMARYを横断表示
                                            # project指定時: そのプロジェクトのSUMMARY履歴を表示
 
-collog search summaries|changes|todos|all <keyword> [project]
+collog search summaries|summary|changes|change|todos|todo|all <keyword> [project]
                                            # 本文にkeywordを含む記録を横断検索
+collog show summary|change <project> <id> # SUMMARY/CHANGESを1件だけ表示
 
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
 
-`add`/`list`/`finish`は、それぞれさらに対象（`summary`/`change`/`todo`）を指定する2段階の
-サブコマンドになっている。各サブコマンドの詳細は `collog <cmd> -h` または
-`collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）で確認できる。
+`add`/`list`/`finish`/`search`/`show`は、それぞれさらに対象（`summary`/`change`/`todo`等）を
+指定する2段階のサブコマンドになっている。`list`/`search`の対象名は単数形でも指定できる
+（`list todos`↔`list todo`など。ただし`search all`だけは省略・単数化していない——検索
+キーワード自体が種別名と偶然一致した場合に誤動作するため）。各サブコマンドの詳細は
+`collog <cmd> -h` または `collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）
+で確認できる。
 
 ### list todos の表示
 
@@ -75,6 +79,10 @@ project指定時`# collog status: <project>` + `## 日時`見出し。`list chan
 単純な部分一致のため、複合語の境界をまたいだ偶然の一致がありうる（例: `PDO`で検索すると
 `BitmapDocument`にヒットすることがある）。単語境界を意識した検索は日本語との相性が
 悪いため、今のところ見送っている。
+
+見出しには`#id`を含める（summary/changeも含め全種別）。summary/changeの`#id`は
+`show summary|change <project> <id>`に渡すと、その1件だけを全文表示できる
+（スニペットで気になった記録を、そのまま全文で確認する用途）。
 
 ## 備考
 
