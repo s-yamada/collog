@@ -42,9 +42,14 @@ def get_conn():
             project TEXT NOT NULL,
             created_at TEXT NOT NULL,
             completed_at TEXT,
+            from_project TEXT,
             body TEXT NOT NULL
         )"""
     )
+    # 既存DB向けマイグレーション: from_project列が無ければ追加（requestコマンド対応）。
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(todos)")}
+    if "from_project" not in existing_cols:
+        conn.execute("ALTER TABLE todos ADD COLUMN from_project TEXT")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS projects (
             name TEXT PRIMARY KEY,
@@ -179,12 +184,16 @@ def cmd_add_todo(args):
     body = read_body()
     conn = get_conn()
     require_registered_project(conn, args.project)
+    from_project = args.from_project
+    if from_project:
+        require_registered_project(conn, from_project)
     cur = conn.execute(
-        "INSERT INTO todos (project, created_at, body) VALUES (?, ?, ?)",
-        (args.project, resolve_timestamp(args.at), body),
+        "INSERT INTO todos (project, created_at, from_project, body) VALUES (?, ?, ?, ?)",
+        (args.project, resolve_timestamp(args.at), from_project, body),
     )
     conn.commit()
-    print(f"OK: TODO #{cur.lastrowid} を追加しました ({args.project})")
+    suffix = f"（from: {from_project}）" if from_project else ""
+    print(f"OK: TODO #{cur.lastrowid} を追加しました ({args.project}){suffix}")
 
 
 def cmd_finish_todo(args):
@@ -202,19 +211,22 @@ def cmd_finish_todo(args):
 
 def cmd_todos(args):
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT id, created_at, completed_at, body FROM todos WHERE project = ? ORDER BY created_at",
-        (args.project,),
-    ).fetchall()
+    query = "SELECT id, created_at, completed_at, from_project, body FROM todos WHERE project = ?"
+    params = [args.project]
+    if args.requests_only:
+        query += " AND from_project IS NOT NULL"
+    query += " ORDER BY created_at"
+    rows = conn.execute(query, params).fetchall()
     shown = 0
-    for todo_id, created_at, completed_at, body in rows:
+    for todo_id, created_at, completed_at, from_project, body in rows:
         if not args.all and completed_at is not None:
             continue
         mark = "x" if completed_at else " "
+        tag = f" [from: {from_project}]" if from_project else ""
         # GFMのタスクリスト記法（- [ ]/- [x]）。素の「[ ]」はMarkdown上ただの地の文で、
         # 空行の無い連続行が1段落にmergeされてしまう（mdcat等で確認済み）ため、
         # 各項目が独立したリスト項目として扱われるよう「- 」を必ず付ける。
-        header = f"- [{mark}]" if args.no_id else f"- [{mark}] #{todo_id}"
+        header = f"- [{mark}]{tag}" if args.no_id else f"- [{mark}] #{todo_id}{tag}"
         lines = body.split("\n")
         print(f"{header} {lines[0]}")
         for line in lines[1:]:
@@ -224,7 +236,8 @@ def cmd_todos(args):
             print()
         shown += 1
     if shown == 0:
-        print(f"（{args.project} に該当するTODOはありません）")
+        label = "REQUEST" if args.requests_only else "TODO"
+        print(f"（{args.project} に該当する{label}はありません）")
 
 
 def _print_or_page(output):
@@ -425,15 +438,16 @@ def cmd_search(args):
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if "todo" in kinds:
-        query = "SELECT id, created_at, completed_at, project, body FROM todos"
+        query = "SELECT id, created_at, completed_at, from_project, project, body FROM todos"
         params = []
         if args.project:
             query += " WHERE project = ?"
             params.append(args.project)
-        for todo_id, created_at, completed_at, project, body in conn.execute(query, params).fetchall():
+        for todo_id, created_at, completed_at, from_project, project, body in conn.execute(query, params).fetchall():
             if keyword_lower in body.lower():
                 mark = "x" if completed_at else " "
-                header = f"## [{created_at}] {project} (todo #{todo_id} [{mark}])"
+                tag = f" from: {from_project}" if from_project else ""
+                header = f"## [{created_at}] {project} (todo #{todo_id} [{mark}]{tag})"
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if not matches:
@@ -499,6 +513,13 @@ def build_parser():
     p = add_sub.add_parser("todo", help="標準入力の内容をTODOとして追加")
     p.add_argument("project")
     p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_add_todo, from_project=None)
+
+    p = add_sub.add_parser("request", help="他プロジェクトからの依頼として標準入力の内容をTODOに追加")
+    p.add_argument("project", help="依頼先（TODOリストに載る）のプロジェクト")
+    p.add_argument("--from", dest="from_project", required=True, metavar="PROJECT",
+                    help="依頼元のプロジェクト")
+    p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_todo)
 
     finish_p = sub.add_parser("finish", help="TODOを完了にする")
@@ -513,12 +534,19 @@ def build_parser():
     list_p = sub.add_parser("list", help="TODO/CHANGESの一覧を表示する")
     list_sub = list_p.add_subparsers(dest="list_target", required=True)
 
-    p = list_sub.add_parser("todos", aliases=["todo"], help="TODO一覧（デフォルトは未完了のみ）")
+    p = list_sub.add_parser("todos", aliases=["todo"], help="TODO一覧（デフォルトは未完了のみ、requestも含む）")
     p.add_argument("project")
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--no-id", action="store_true",
                     help="#id を表示しない（finish todoで指定する必要がない、閲覧目的の時向け）")
-    p.set_defaults(func=cmd_todos)
+    p.set_defaults(func=cmd_todos, requests_only=False)
+
+    p = list_sub.add_parser("requests", aliases=["request"],
+                             help="他プロジェクトからの依頼（request）だけに絞ったTODO一覧")
+    p.add_argument("project")
+    p.add_argument("--all", action="store_true", help="完了分も含めて表示")
+    p.add_argument("--no-id", action="store_true", help="#id を表示しない")
+    p.set_defaults(func=cmd_todos, requests_only=True)
 
     p = list_sub.add_parser("changes", aliases=["change"], help="CHANGESの一覧をMarkdown形式で表示")
     p.add_argument("project")
