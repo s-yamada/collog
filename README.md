@@ -31,6 +31,9 @@ collog status [project] [--sort ...] [--asc|--desc] [-n] [-r]
                                            # project省略時: 全プロジェクトの最新SUMMARYを横断表示
                                            # project指定時: そのプロジェクトのSUMMARY履歴を表示
 
+collog search summaries|changes|todos|all <keyword> [project]
+                                           # 本文にkeywordを含む記録を横断検索
+
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
 
@@ -61,6 +64,17 @@ project指定時`# collog status: <project>` + `## 日時`見出し。`list chan
 降順（新しい方から。省略時は`--sort {created_at,project}`が選べる）。`-r`は、`-n`件を絞り込んだ
 後の**表示順だけ**を反転する（`status`/`list changes`ともproject指定時のみ有効。例:
 直近3件を古い方から時系列順に読みたい時は`status <project> -n 3 -r`）。
+
+### search の表示
+
+本文にキーワードを含む記録を、`entries`（summary/change）と`todos`の両方から検索する。
+大小文字は区別しない部分一致で、ヒット箇所の前後（既定80文字ずつ）を切り出した
+スニペットを表示する（grepのcontext表示に近い形）。todoのヒットは`#id`と完了状態
+（`[x]`/`[ ]`）も見出しに含める。`project`は省略可（省略時は全プロジェクト横断）。
+
+単純な部分一致のため、複合語の境界をまたいだ偶然の一致がありうる（例: `PDO`で検索すると
+`BitmapDocument`にヒットすることがある）。単語境界を意識した検索は日本語との相性が
+悪いため、今のところ見送っている。
 
 ## 備考
 
