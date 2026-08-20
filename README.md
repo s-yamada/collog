@@ -21,9 +21,12 @@ collog projects                           # 登録済みプロジェクトの一
 collog add summary <project> [--at 日時]   # 標準入力の内容をSUMMARYとして記録
 collog add change <project> [--at 日時]    # 標準入力の内容をCHANGESとして記録
 collog add todo <project> [--at 日時]      # 標準入力の内容をTODOとして追加
+collog add request <project> --from <source_project> [--at 日時]
+                                           # 他プロジェクトからの依頼としてTODOに追加
 collog finish todo <project> <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list todos|todo <project> [--all] [--no-id]  # TODO一覧（既定は未完了のみ）
+collog list todos|todo <project> [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
+collog list requests|request <project> [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
 collog list changes|change <project> [-n] [--sort created_at|id] [--asc|--desc] [-r]
                                            # CHANGESの一覧をMarkdown形式で表示
 
@@ -51,6 +54,18 @@ collog help [command...]                  # サブコマンドのヘルプを表
 出力する（素の`[ ]`は`mdcat`等でMarkdown化すると1段落にmergeされてしまうため）。作成日時は
 表示しない。`#id`は`finish todo`の入力として必須なため既定で表示するが、閲覧目的で邪魔な場合は
 `--no-id`で消せる。
+
+### request（他プロジェクトからの依頼）
+
+`add request <project> --from <source_project>`で、他プロジェクトからの依頼をTODOとして
+記録する。`--from`はcollogで唯一の必須フラグ（他は全て任意）——`project`（依頼先）と
+`source_project`（依頼元）が同じ「プロジェクト名」という形の値なので、位置引数2つだと
+順序を取り違えやすく、名前付きで明示する方を選んだ。
+
+内部的には独立テーブルではなく`todos`に`from_project`列を足しただけなので、
+`finish todo`/`search todos`はそのまま使える。`list todos`はrequestも含めて全件表示し
+（見落とし防止）、見出しに`[from: <source_project>]`タグが付く。`list requests`で
+requestだけに絞り込める。
 
 ### status / list changes の表示
 
