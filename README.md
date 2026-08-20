@@ -18,16 +18,16 @@ main/install.sh
 collog init <project> [path]              # プロジェクトを登録（既存ならpathを更新）
 collog projects                           # 登録済みプロジェクトの一覧
 
-collog add summary <project> [--at 日時]   # 標準入力の内容をSUMMARYとして記録
-collog add change <project> [--at 日時]    # 標準入力の内容をCHANGESとして記録
-collog add todo <project> [--at 日時]      # 標準入力の内容をTODOとして追加
-collog add request <project> --from <source_project> [--at 日時]
+collog add summary [project] [--at 日時]   # 標準入力の内容をSUMMARYとして記録
+collog add change [project] [--at 日時]    # 標準入力の内容をCHANGESとして記録
+collog add todo [project] [--at 日時]      # 標準入力の内容をTODOとして追加
+collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
-collog finish todo <project> <id> [--at 日時]  # 指定TODOを完了にする
+collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list todos|todo <project> [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
-collog list requests|request <project> [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
-collog list changes|change <project> [-n] [--sort created_at|id] [--asc|--desc] [-r]
+collog list todos|todo [project] [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
+collog list requests|request [project] [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
+collog list changes|change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
                                            # CHANGESの一覧をMarkdown形式で表示
 
 collog status [project] [--sort ...] [--asc|--desc] [-n] [-r]
@@ -36,7 +36,7 @@ collog status [project] [--sort ...] [--asc|--desc] [-n] [-r]
 
 collog search summaries|summary|changes|change|todos|todo|all <keyword> [project]
                                            # 本文にkeywordを含む記録を横断検索
-collog show summary|change <project> <id> # SUMMARY/CHANGESを1件だけ表示
+collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
 
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
@@ -48,6 +48,11 @@ collog help [command...]                  # サブコマンドのヘルプを表
 `collog <cmd> -h` または `collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）
 で確認できる。
 
+`[project]`と書かれている箇所は省略可能で、省略するとカレントディレクトリから登録済み
+プロジェクトを推測する（`main/`のようなサブディレクトリからでも拾える。詳細は後述）。
+`add request`の`project`（依頼先）だけは推測しようがないため引き続き明示必須。`status`/
+`search`の`project`省略は「横断/全プロジェクト対象」という別の意味なので対象外。
+
 ### list todos の表示
 
 各項目をGFM（GitHub Flavored Markdown）のタスクリスト記法（`- [ ] ...` / `- [x] ...`）で
@@ -57,15 +62,28 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 ### request（他プロジェクトからの依頼）
 
-`add request <project> --from <source_project>`で、他プロジェクトからの依頼をTODOとして
-記録する。`--from`はcollogで唯一の必須フラグ（他は全て任意）——`project`（依頼先）と
-`source_project`（依頼元）が同じ「プロジェクト名」という形の値なので、位置引数2つだと
-順序を取り違えやすく、名前付きで明示する方を選んだ。
+`add request <project> [--from <source_project>]`で、他プロジェクトからの依頼をTODOとして
+記録する。`project`（依頼先）は明示必須、`--from`（依頼元）は省略するとカレントディレクトリ
+から推測される（依頼を登録する時は大抵、依頼元のディレクトリで作業しているはずのため）。
+`--from`を名前付きフラグにしているのは、`project`と`source_project`が同じ「プロジェクト名」
+という形の値なので、位置引数2つだと順序を取り違えやすいため。
 
 内部的には独立テーブルではなく`todos`に`from_project`列を足しただけなので、
 `finish todo`/`search todos`はそのまま使える。`list todos`はrequestも含めて全件表示し
 （見落とし防止）、見出しに`[from: <source_project>]`タグが付く。`list requests`で
 requestだけに絞り込める。
+
+### projectのカレントディレクトリ自動推測
+
+`[project]`と書かれているコマンドは、省略すると`os.getcwd()`を登録済み`projects.path`と
+照合してプロジェクトを推測する。完全一致だけでなく、そのサブディレクトリ（`main/`等）に
+いる場合も拾える。ネストした登録が複数一致する場合は最も深いパスを優先する。該当が無く
+`project`も省略されている場合はエラーで終了する（`collog init`を促すメッセージが出る）。
+
+`status`/`search`の`project`省略は「横断/全プロジェクト対象」という別の意味を持つため、
+この自動推測の対象外（挙動は変えていない）。`add request`の`project`（依頼先）も、
+CWDからは「今どのプロジェクトにいるか」しか分からず「どの他プロジェクトへ送るか」は
+推測しようがないため対象外（`--from`（依頼元）は対象）。
 
 ### status / list changes の表示
 
