@@ -371,6 +371,23 @@ def cmd_changes(args):
     _print_or_page(_format_dated_entries(f"# collog changes: {args.project}", rows))
 
 
+def cmd_show(args):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT created_at, body FROM entries WHERE id = ? AND project = ? AND kind = ?",
+        (args.id, args.project, args.kind),
+    ).fetchone()
+    if row is None:
+        print(
+            f"エラー: 該当する{args.kind}が見つかりません（project={args.project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    created_at, body = row
+    title = f"# collog show {args.kind}: {args.project} #{args.id}"
+    _print_or_page(_format_dated_entries(title, [(created_at, body)]))
+
+
 def _match_snippet(body, keyword, context=80):
     """本文中でkeywordが最初に現れる位置の前後を切り出す（大小文字は区別しない）。
 
@@ -397,14 +414,14 @@ def cmd_search(args):
     entry_kinds = [k for k in kinds if k in ("summary", "change")]
     if entry_kinds:
         placeholders = ",".join("?" * len(entry_kinds))
-        query = f"SELECT created_at, kind, project, body FROM entries WHERE kind IN ({placeholders})"
+        query = f"SELECT id, created_at, kind, project, body FROM entries WHERE kind IN ({placeholders})"
         params = list(entry_kinds)
         if args.project:
             query += " AND project = ?"
             params.append(args.project)
-        for created_at, kind, project, body in conn.execute(query, params).fetchall():
+        for entry_id, created_at, kind, project, body in conn.execute(query, params).fetchall():
             if keyword_lower in body.lower():
-                header = f"## [{created_at}] {project} ({kind})"
+                header = f"## [{created_at}] {project} ({kind} #{entry_id})"
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if "todo" in kinds:
@@ -496,14 +513,14 @@ def build_parser():
     list_p = sub.add_parser("list", help="TODO/CHANGESの一覧を表示する")
     list_sub = list_p.add_subparsers(dest="list_target", required=True)
 
-    p = list_sub.add_parser("todos", help="TODO一覧（デフォルトは未完了のみ）")
+    p = list_sub.add_parser("todos", aliases=["todo"], help="TODO一覧（デフォルトは未完了のみ）")
     p.add_argument("project")
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--no-id", action="store_true",
                     help="#id を表示しない（finish todoで指定する必要がない、閲覧目的の時向け）")
     p.set_defaults(func=cmd_todos)
 
-    p = list_sub.add_parser("changes", help="CHANGESの一覧をMarkdown形式で表示")
+    p = list_sub.add_parser("changes", aliases=["change"], help="CHANGESの一覧をMarkdown形式で表示")
     p.add_argument("project")
     p.add_argument("-n", type=int, default=None, help="表示件数（既定: 全件）")
     p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
@@ -530,17 +547,26 @@ def build_parser():
     search_sub = search_p.add_subparsers(dest="search_target", required=True)
 
     search_targets = [
-        ("summaries", "summary", "SUMMARYを検索"),
-        ("changes", "change", "CHANGESを検索"),
-        ("todos", "todo", "TODOを検索"),
-        ("all", None, "SUMMARY/CHANGES/TODOすべてを検索"),
+        ("summaries", ["summary"], "summary", "SUMMARYを検索"),
+        ("changes", ["change"], "change", "CHANGESを検索"),
+        ("todos", ["todo"], "todo", "TODOを検索"),
+        ("all", [], None, "SUMMARY/CHANGES/TODOすべてを検索"),
     ]
-    for name, kind, help_text in search_targets:
-        p = search_sub.add_parser(name, help=help_text)
+    for name, aliases, kind, help_text in search_targets:
+        p = search_sub.add_parser(name, aliases=aliases, help=help_text)
         p.add_argument("keyword")
         p.add_argument("project", nargs="?", default=None,
                         help="指定するとそのプロジェクトのみ検索（省略時は全プロジェクト横断）")
         p.set_defaults(func=cmd_search, kind=kind)
+
+    show_p = sub.add_parser("show", help="SUMMARY/CHANGESを1件だけ表示する")
+    show_sub = show_p.add_subparsers(dest="show_target", required=True)
+
+    for name, kind in [("summary", "summary"), ("change", "change")]:
+        p = show_sub.add_parser(name, help=f"指定idの{kind}を1件表示")
+        p.add_argument("project")
+        p.add_argument("id", type=int)
+        p.set_defaults(func=cmd_show, kind=kind)
 
     p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
     p.add_argument("command", nargs="*", default=[],
