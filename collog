@@ -127,6 +127,43 @@ def require_registered_project(conn, project):
         sys.exit(1)
 
 
+def _project_from_cwd(conn):
+    """カレントディレクトリから登録済みプロジェクトを推測する。
+
+    projects.pathと完全一致、またはその配下にいる場合にマッチする。
+    複数該当する場合（ネストした登録）は最も深い（specific）パスを優先する。
+    一致が無ければNoneを返す。
+    """
+    cwd = os.path.realpath(os.getcwd())
+    best_name = None
+    best_len = -1
+    for name, path in conn.execute("SELECT name, path FROM projects WHERE path IS NOT NULL"):
+        proj_path = os.path.realpath(path)
+        if cwd == proj_path or cwd.startswith(proj_path + os.sep):
+            if len(proj_path) > best_len:
+                best_len = len(proj_path)
+                best_name = name
+    return best_name
+
+
+def _resolve_project(value, conn, label="project"):
+    """引数で明示されていればそれを、無ければカレントディレクトリから推測して返す。
+
+    どちらも得られない場合はエラーで終了する。
+    """
+    if value is not None:
+        return value
+    detected = _project_from_cwd(conn)
+    if detected is None:
+        print(
+            f"エラー: {label}が指定されておらず、カレントディレクトリからも推測できません。"
+            f"明示的に指定するか、このディレクトリで`collog init <project>`を実行してください。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return detected
+
+
 def cmd_init(args):
     path = os.path.abspath(args.path) if args.path else os.getcwd()
     conn = get_conn()
@@ -171,48 +208,66 @@ def cmd_add_entry(args):
     body = read_body()
     validate_body_headings(body)
     conn = get_conn()
-    require_registered_project(conn, args.project)
+    project = _resolve_project(args.project, conn)
+    require_registered_project(conn, project)
     conn.execute(
         "INSERT INTO entries (project, kind, created_at, body) VALUES (?, ?, ?, ?)",
-        (args.project, args.kind, resolve_timestamp(args.at), body),
+        (project, args.kind, resolve_timestamp(args.at), body),
     )
     conn.commit()
-    print(f"OK: [{args.kind}] {args.project} を記録しました")
+    print(f"OK: [{args.kind}] {project} を記録しました")
 
 
 def cmd_add_todo(args):
     body = read_body()
     conn = get_conn()
-    require_registered_project(conn, args.project)
+    project = _resolve_project(args.project, conn)
+    require_registered_project(conn, project)
+
     from_project = args.from_project
+    if args.is_request and from_project is None:
+        from_project = _project_from_cwd(conn)
+        if from_project is None:
+            print(
+                "エラー: --fromが指定されておらず、カレントディレクトリからも推測できません。"
+                "明示的に --from <project> を指定してください。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     if from_project:
         require_registered_project(conn, from_project)
+        if from_project == project:
+            print("エラー: 依頼先(project)と依頼元(--from)が同じプロジェクトです", file=sys.stderr)
+            sys.exit(1)
+
     cur = conn.execute(
         "INSERT INTO todos (project, created_at, from_project, body) VALUES (?, ?, ?, ?)",
-        (args.project, resolve_timestamp(args.at), from_project, body),
+        (project, resolve_timestamp(args.at), from_project, body),
     )
     conn.commit()
     suffix = f"（from: {from_project}）" if from_project else ""
-    print(f"OK: TODO #{cur.lastrowid} を追加しました ({args.project}){suffix}")
+    print(f"OK: TODO #{cur.lastrowid} を追加しました ({project}){suffix}")
 
 
 def cmd_finish_todo(args):
     conn = get_conn()
+    project = _resolve_project(args.project, conn)
     cur = conn.execute(
         "UPDATE todos SET completed_at = ? WHERE id = ? AND project = ? AND completed_at IS NULL",
-        (resolve_timestamp(args.at), args.id, args.project),
+        (resolve_timestamp(args.at), args.id, project),
     )
     conn.commit()
     if cur.rowcount == 0:
         print("エラー: 該当する未完了TODOが見つかりません", file=sys.stderr)
         sys.exit(1)
-    print(f"OK: TODO #{args.id} ({args.project}) を完了にしました")
+    print(f"OK: TODO #{args.id} ({project}) を完了にしました")
 
 
 def cmd_todos(args):
     conn = get_conn()
+    project = _resolve_project(args.project, conn)
     query = "SELECT id, created_at, completed_at, from_project, body FROM todos WHERE project = ?"
-    params = [args.project]
+    params = [project]
     if args.requests_only:
         query += " AND from_project IS NOT NULL"
     query += " ORDER BY created_at"
@@ -237,7 +292,7 @@ def cmd_todos(args):
         shown += 1
     if shown == 0:
         label = "REQUEST" if args.requests_only else "TODO"
-        print(f"（{args.project} に該当する{label}はありません）")
+        print(f"（{project} に該当する{label}はありません）")
 
 
 def _print_or_page(output):
@@ -373,31 +428,33 @@ def cmd_status(args):
 
 def cmd_changes(args):
     conn = get_conn()
+    project = _resolve_project(args.project, conn)
     # changesは元々「全件を古い順」が既定（changelogを上から時系列で読む用途）だったため、
     # --asc/--descを追加した後もその既定（昇順）を維持する。
-    rows = _fetch_entries(conn, args.project, "change", args.sort, not args.desc, args.n)
+    rows = _fetch_entries(conn, project, "change", args.sort, not args.desc, args.n)
     if not rows:
-        print(f"(記録なし: {args.project})", file=sys.stderr)
+        print(f"(記録なし: {project})", file=sys.stderr)
         return
     if args.reverse:
         rows = list(reversed(rows))
-    _print_or_page(_format_dated_entries(f"# collog changes: {args.project}", rows))
+    _print_or_page(_format_dated_entries(f"# collog changes: {project}", rows))
 
 
 def cmd_show(args):
     conn = get_conn()
+    project = _resolve_project(args.project, conn)
     row = conn.execute(
         "SELECT created_at, body FROM entries WHERE id = ? AND project = ? AND kind = ?",
-        (args.id, args.project, args.kind),
+        (args.id, project, args.kind),
     ).fetchone()
     if row is None:
         print(
-            f"エラー: 該当する{args.kind}が見つかりません（project={args.project}, id={args.id}）",
+            f"エラー: 該当する{args.kind}が見つかりません（project={project}, id={args.id}）",
             file=sys.stderr,
         )
         sys.exit(1)
     created_at, body = row
-    title = f"# collog show {args.kind}: {args.project} #{args.id}"
+    title = f"# collog show {args.kind}: {project} #{args.id}"
     _print_or_page(_format_dated_entries(title, [(created_at, body)]))
 
 
@@ -496,37 +553,38 @@ def build_parser():
     p.set_defaults(func=cmd_projects)
 
     at_help = "日時を指定して遡って記録する（'YYYY-MM-DD HH:MM[:SS]'形式。省略時は現在時刻）"
+    project_help = "省略時はカレントディレクトリから登録済みプロジェクトを推測する"
 
     add_p = sub.add_parser("add", help="SUMMARY/CHANGES/TODOを記録する")
     add_sub = add_p.add_subparsers(dest="add_target", required=True)
 
     p = add_sub.add_parser("summary", help="標準入力の内容をSUMMARYとして記録")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_entry, kind="summary")
 
     p = add_sub.add_parser("change", help="標準入力の内容をCHANGESとして記録")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_entry, kind="change")
 
     p = add_sub.add_parser("todo", help="標準入力の内容をTODOとして追加")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--at", default=None, help=at_help)
-    p.set_defaults(func=cmd_add_todo, from_project=None)
+    p.set_defaults(func=cmd_add_todo, from_project=None, is_request=False)
 
     p = add_sub.add_parser("request", help="他プロジェクトからの依頼として標準入力の内容をTODOに追加")
     p.add_argument("project", help="依頼先（TODOリストに載る）のプロジェクト")
-    p.add_argument("--from", dest="from_project", required=True, metavar="PROJECT",
-                    help="依頼元のプロジェクト")
+    p.add_argument("--from", dest="from_project", default=None, metavar="PROJECT",
+                    help="依頼元のプロジェクト（省略時はカレントディレクトリから推測）")
     p.add_argument("--at", default=None, help=at_help)
-    p.set_defaults(func=cmd_add_todo)
+    p.set_defaults(func=cmd_add_todo, is_request=True)
 
     finish_p = sub.add_parser("finish", help="TODOを完了にする")
     finish_sub = finish_p.add_subparsers(dest="finish_target", required=True)
 
     p = finish_sub.add_parser("todo", help="指定IDのTODOを完了にする")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("id", type=int)
     p.add_argument("--at", default=None, help="完了日時を指定して遡って記録する（同上の形式）")
     p.set_defaults(func=cmd_finish_todo)
@@ -535,7 +593,7 @@ def build_parser():
     list_sub = list_p.add_subparsers(dest="list_target", required=True)
 
     p = list_sub.add_parser("todos", aliases=["todo"], help="TODO一覧（デフォルトは未完了のみ、requestも含む）")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--no-id", action="store_true",
                     help="#id を表示しない（finish todoで指定する必要がない、閲覧目的の時向け）")
@@ -543,13 +601,13 @@ def build_parser():
 
     p = list_sub.add_parser("requests", aliases=["request"],
                              help="他プロジェクトからの依頼（request）だけに絞ったTODO一覧")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--no-id", action="store_true", help="#id を表示しない")
     p.set_defaults(func=cmd_todos, requests_only=True)
 
     p = list_sub.add_parser("changes", aliases=["change"], help="CHANGESの一覧をMarkdown形式で表示")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("-n", type=int, default=None, help="表示件数（既定: 全件）")
     p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
                     help="並べ替えに使う列（既定: created_at）")
@@ -592,7 +650,8 @@ def build_parser():
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
         p = show_sub.add_parser(name, help=f"指定idの{kind}を1件表示")
-        p.add_argument("project")
+        p.add_argument("project", nargs="?", default=None,
+                        help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_show, kind=kind)
 
