@@ -206,7 +206,8 @@ def cmd_projects(args):
 
 def cmd_rename(args):
     conn = get_conn()
-    old, new = args.old_name, args.new_name
+    old = _resolve_project(args.old_name, conn, "old_name")
+    new = args.new_name
     if conn.execute("SELECT 1 FROM projects WHERE name = ?", (old,)).fetchone() is None:
         print(f"エラー: プロジェクト '{old}' は未登録です。", file=sys.stderr)
         sys.exit(1)
@@ -585,7 +586,8 @@ def build_parser():
     p.set_defaults(func=cmd_projects)
 
     p = sub.add_parser("rename", help="プロジェクト名を変更する（entries/todosの参照も追従）")
-    p.add_argument("old_name")
+    p.add_argument("old_name", nargs="?", default=None,
+                    help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
     p.add_argument("new_name")
     p.set_defaults(func=cmd_rename)
 
