@@ -17,6 +17,7 @@ main/install.sh
 ```
 collog init <project> [path]              # プロジェクトを登録（既存ならpathを更新）
 collog projects                           # 登録済みプロジェクトの一覧
+collog rename <old_name> <new_name>       # プロジェクト名を変更（entries/todosの参照も追従）
 
 collog add summary [project] [--at 日時]   # 標準入力の内容をSUMMARYとして記録
 collog add change [project] [--at 日時]    # 標準入力の内容をCHANGESとして記録
@@ -116,6 +117,17 @@ project指定時`# collog status: <project>` + `## 日時`見出し。`list chan
 見出しには`#id`を含める（summary/changeも含め全種別）。summary/changeの`#id`は
 `show summary|change <project> <id>`に渡すと、その1件だけを全文表示できる
 （スニペットで気になった記録を、そのまま全文で確認する用途）。
+
+### rename（プロジェクト名の変更）
+
+`rename <old_name> <new_name>`で登録済みプロジェクトの名前を変更する。`projects.name`
+だけでなく、`entries.project`・`todos.project`・`todos.from_project`（requestの依頼元
+参照）も1トランザクションでまとめて更新する。`path`は変更しないため、CWD自動推測は
+rename後もそのディレクトリから引き続き機能する。
+
+`mv`（Unixの慣習）ではなく`rename`にしたのは、`mv`だと「移動」＝パス変更を連想させ、
+既にパス変更は`init`の役割なので紛らわしいため。ここでやりたいのは識別子（名前）の
+変更なので`rename`が実態に合う。
 
 ## 備考
 
