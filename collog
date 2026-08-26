@@ -204,6 +204,38 @@ def cmd_projects(args):
         print(f"{name}\t{path}\t(登録: {created_at} / 更新: {updated_at})")
 
 
+def cmd_rename(args):
+    conn = get_conn()
+    old, new = args.old_name, args.new_name
+    if conn.execute("SELECT 1 FROM projects WHERE name = ?", (old,)).fetchone() is None:
+        print(f"エラー: プロジェクト '{old}' は未登録です。", file=sys.stderr)
+        sys.exit(1)
+    if old == new:
+        print("エラー: 変更前後で同じ名前です。", file=sys.stderr)
+        sys.exit(1)
+    if conn.execute("SELECT 1 FROM projects WHERE name = ?", (new,)).fetchone() is not None:
+        print(f"エラー: プロジェクト '{new}' は既に登録されています。", file=sys.stderr)
+        sys.exit(1)
+
+    conn.execute(
+        "UPDATE projects SET name = ?, updated_at = ? WHERE name = ?", (new, now(), old)
+    )
+    entries_n = conn.execute(
+        "UPDATE entries SET project = ? WHERE project = ?", (new, old)
+    ).rowcount
+    todos_n = conn.execute(
+        "UPDATE todos SET project = ? WHERE project = ?", (new, old)
+    ).rowcount
+    from_n = conn.execute(
+        "UPDATE todos SET from_project = ? WHERE from_project = ?", (new, old)
+    ).rowcount
+    conn.commit()
+    print(
+        f"OK: プロジェクト '{old}' を '{new}' にリネームしました "
+        f"(entries: {entries_n}件, todos: {todos_n}件, from参照: {from_n}件)"
+    )
+
+
 def cmd_add_entry(args):
     body = read_body()
     validate_body_headings(body)
@@ -551,6 +583,11 @@ def build_parser():
 
     p = sub.add_parser("projects", help="登録済みプロジェクトの一覧")
     p.set_defaults(func=cmd_projects)
+
+    p = sub.add_parser("rename", help="プロジェクト名を変更する（entries/todosの参照も追従）")
+    p.add_argument("old_name")
+    p.add_argument("new_name")
+    p.set_defaults(func=cmd_rename)
 
     at_help = "日時を指定して遡って記録する（'YYYY-MM-DD HH:MM[:SS]'形式。省略時は現在時刻）"
     project_help = "省略時はカレントディレクトリから登録済みプロジェクトを推測する"
