@@ -40,6 +40,9 @@ collog search summary|change|todo|all <keyword> [project]
                                            # 本文にkeywordを含む記録を横断検索
 collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
 
+collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
+collog delete summary|change|todo [project] <id>              # 削除
+
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
 
@@ -129,6 +132,21 @@ requestだけに絞り込める。
 見出しには`#id`を含める（summary/changeも含め全種別）。summary/changeの`#id`は
 `show summary|change <project> <id>`に渡すと、その1件だけを全文表示できる
 （スニペットで気になった記録を、そのまま全文で確認する用途）。
+
+### update/delete（訂正・削除）
+
+`update summary|change|todo [project] <id> [--at 日時]`で本文を標準入力の内容で
+置き換え、`delete summary|change|todo [project] <id>`で削除する。`update`は`add`と
+同様、本文の見出しレベル制約（`#`/`##`禁止）を検証する。`project`/`kind`/`id`の
+組み合わせが一致しない場合はエラーで拒否する（他プロジェクト・他kindのidを
+誤って指定した場合の誤爆防止）。
+
+`entries`（summary/change）は元々「追記したら書き換えない」という設計方針だった
+（`todos`だけ完了マークで`UPDATE`が発生するため別テーブルにした、という経緯もこの
+前提あってのもの）。`list summary`/`list change`にも`--id`が付いて`show`と組み合わせ
+やすくなったのを機に、「間違えたら直したい・消したい」という実需要を優先して
+方針を転換した。対象を直近1件だけに絞る`amend`/`undo`方式（gitの`commit --amend`の
+ような発想）も検討したが、任意のidを指定できる汎用コマンドとして実装している。
 
 ### rename（プロジェクト名の変更）
 
