@@ -45,9 +45,10 @@ collog help [command...]                  # サブコマンドのヘルプを表
 `add`/`list`/`finish`/`search`/`show`は、それぞれさらに対象（`summary`/`change`/`todo`等）を
 指定する2段階のサブコマンドになっている。`list`/`search`の対象名は単数形でも指定できる
 （`list todos`↔`list todo`など。ただし`search all`だけは省略・単数化していない——検索
-キーワード自体が種別名と偶然一致した場合に誤動作するため）。各サブコマンドの詳細は
-`collog <cmd> -h` または `collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）
-で確認できる。
+キーワード自体が種別名と偶然一致した場合に誤動作するため）。単数形はあくまで入力として
+受け付けるエイリアスで、ヘルプ表示には意図的に出していない（正式名のみ表示）。各サブコマンド
+の詳細は`collog <cmd> -h` または `collog help <cmd> [<サブコマンド>]`（例:
+`collog help add summary`）で確認できる。
 
 `[project]`と書かれている箇所は省略可能で、省略するとカレントディレクトリから登録済み
 プロジェクトを推測する（`main/`のようなサブディレクトリからでも拾える。詳細は後述）。
