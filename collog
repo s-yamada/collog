@@ -7,6 +7,7 @@
 日時はすべてこのスクリプトが自動生成する（呼び出し側が書式を指定する余地を作らない）。
 """
 import argparse
+import json
 import os
 import re
 import shutil
@@ -565,6 +566,138 @@ def cmd_delete_todo(args):
     print(f"OK: TODO #{args.id} ({project}) を削除しました")
 
 
+def cmd_export(args):
+    conn = get_conn()
+    if args.project:
+        if conn.execute(
+            "SELECT 1 FROM projects WHERE name = ?", (args.project,)
+        ).fetchone() is None:
+            print(f"エラー: プロジェクト '{args.project}' は未登録です。", file=sys.stderr)
+            sys.exit(1)
+        project_rows = conn.execute(
+            "SELECT name, path, created_at, updated_at FROM projects WHERE name = ?",
+            (args.project,),
+        ).fetchall()
+        entry_rows = conn.execute(
+            "SELECT id, project, kind, created_at, body FROM entries WHERE project = ? ORDER BY id",
+            (args.project,),
+        ).fetchall()
+        todo_rows = conn.execute(
+            "SELECT id, project, created_at, completed_at, from_project, body "
+            "FROM todos WHERE project = ? ORDER BY id",
+            (args.project,),
+        ).fetchall()
+    else:
+        project_rows = conn.execute(
+            "SELECT name, path, created_at, updated_at FROM projects ORDER BY name"
+        ).fetchall()
+        entry_rows = conn.execute(
+            "SELECT id, project, kind, created_at, body FROM entries ORDER BY id"
+        ).fetchall()
+        todo_rows = conn.execute(
+            "SELECT id, project, created_at, completed_at, from_project, body FROM todos ORDER BY id"
+        ).fetchall()
+
+    data = {
+        "collog_export_version": 1,
+        "exported_at": now(),
+        "projects": [
+            {"name": n, "path": p, "created_at": c, "updated_at": u}
+            for n, p, c, u in project_rows
+        ],
+        "entries": [
+            {"id": i, "project": pr, "kind": k, "created_at": c, "body": b}
+            for i, pr, k, c, b in entry_rows
+        ],
+        "todos": [
+            {
+                "id": i, "project": pr, "created_at": c,
+                "completed_at": ca, "from_project": fp, "body": b,
+            }
+            for i, pr, c, ca, fp, b in todo_rows
+        ],
+    }
+    # ensure_ascii=False: 日本語本文が\uXXXXにエスケープされて読みにくくなるのを防ぐ
+    # （正しさには影響しない、可読性だけの話）。
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cmd_import(args):
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print("エラー: 標準入力からJSONを読み込めませんでした（空です）", file=sys.stderr)
+        sys.exit(1)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"エラー: JSONの解析に失敗しました: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = get_conn()
+    projects_in = data.get("projects", [])
+    entries_in = data.get("entries", [])
+    todos_in = data.get("todos", [])
+
+    # INSERTを始める前に、entries/todosが参照するprojectが「既に登録済み」か
+    # 「このimportデータのprojectsに含まれている」かを検証する（不整合な取り込みを防ぐ）。
+    known_projects = {row[0] for row in conn.execute("SELECT name FROM projects")}
+    known_projects |= {p["name"] for p in projects_in}
+    for e in entries_in:
+        if e["project"] not in known_projects:
+            print(
+                f"エラー: entriesが参照するプロジェクト '{e['project']}' が未登録で、"
+                f"importデータのprojectsにも含まれていません。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    for t in todos_in:
+        for key in ("project", "from_project"):
+            name = t.get(key)
+            if name and name not in known_projects:
+                print(
+                    f"エラー: todosが参照するプロジェクト '{name}'（{key}）が未登録で、"
+                    f"importデータのprojectsにも含まれていません。",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    ts = now()
+    projects_created = 0
+    for proj in projects_in:
+        name = proj["name"]
+        if conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
+            continue
+        path = proj.get("path") or os.getcwd()
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (name, path, proj.get("created_at", ts), proj.get("updated_at", ts)),
+        )
+        projects_created += 1
+        if not os.path.isdir(path):
+            print(f"警告: プロジェクト '{name}' のパス '{path}' はディレクトリとして存在しません",
+                  file=sys.stderr)
+
+    for e in entries_in:
+        conn.execute(
+            "INSERT INTO entries (project, kind, created_at, body) VALUES (?, ?, ?, ?)",
+            (e["project"], e["kind"], e["created_at"], e["body"]),
+        )
+
+    for t in todos_in:
+        conn.execute(
+            "INSERT INTO todos (project, created_at, completed_at, from_project, body) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (t["project"], t["created_at"], t.get("completed_at"),
+             t.get("from_project"), t["body"]),
+        )
+
+    conn.commit()
+    print(
+        f"OK: インポート完了 (projects: {projects_created}件新規登録, "
+        f"entries: {len(entries_in)}件, todos: {len(todos_in)}件)"
+    )
+
+
 def _match_snippet(body, keyword, context=80):
     """本文中でkeywordが最初に現れる位置の前後を切り出す（大小文字は区別しない）。
 
@@ -834,6 +967,14 @@ def build_parser():
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_delete_todo)
+
+    p = sub.add_parser("export", help="プロジェクトのデータをJSON形式で書き出す（省略時は全プロジェクト）")
+    p.add_argument("project", nargs="?", default=None,
+                    help="省略時は全プロジェクトを対象にする（statusと同様、CWD自動推測はしない）")
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("import", help="標準入力のJSON（exportの出力形式）を取り込む")
+    p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
     p.add_argument("command", nargs="*", default=[],
