@@ -26,16 +26,17 @@ collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list todos|todo [project] [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
-collog list requests|request [project] [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
-collog list changes|change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
-                                           # CHANGESの一覧をMarkdown形式で表示
+collog list summary [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
+                                           # SUMMARY履歴を表示（1プロジェクト分。既定: 直近5件・新しい順）
+collog list change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
+                                           # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
+collog list todo [project] [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
+collog list request [project] [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
 
-collog status [project] [--sort ...] [--asc|--desc] [-n] [-r]
-                                           # project省略時: 全プロジェクトの最新SUMMARYを横断表示
-                                           # project指定時: そのプロジェクトのSUMMARY履歴を表示
+collog status [--sort created_at|project] [--asc|--desc]
+                                           # 全プロジェクトの最新SUMMARYを横断表示
 
-collog search summaries|summary|changes|change|todos|todo|all <keyword> [project]
+collog search summary|change|todo|all <keyword> [project]
                                            # 本文にkeywordを含む記録を横断検索
 collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
 
@@ -43,19 +44,21 @@ collog help [command...]                  # サブコマンドのヘルプを表
 ```
 
 `add`/`list`/`finish`/`search`/`show`は、それぞれさらに対象（`summary`/`change`/`todo`等）を
-指定する2段階のサブコマンドになっている。`list`/`search`の対象名は単数形でも指定できる
-（`list todos`↔`list todo`など。ただし`search all`だけは省略・単数化していない——検索
-キーワード自体が種別名と偶然一致した場合に誤動作するため）。単数形はあくまで入力として
-受け付けるエイリアスで、ヘルプ表示には意図的に出していない（正式名のみ表示）。各サブコマンド
-の詳細は`collog <cmd> -h` または `collog help <cmd> [<サブコマンド>]`（例:
-`collog help add summary`）で確認できる。
+指定する2段階のサブコマンドになっている。対象名は`add`/`finish`/`show`と同じ単数形
+（`summary`/`change`/`todo`/`request`）で統一している——`list`/`search`は元々複数形
+（`todos`/`summaries`等）だったが、動詞によって種別名の数が違うと覚えにくいため単数形に
+揃えた（複数形は入力としてのみ受け付ける非表示エイリアス。`list todo`↔`list todos`など。
+ただし`search all`だけは省略・複数形化していない——検索キーワード自体が種別名と偶然
+一致した場合に誤動作するため、明示必須のまま）。各サブコマンドの詳細は`collog <cmd> -h`
+または `collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）で確認できる。
 
 `[project]`と書かれている箇所は省略可能で、省略するとカレントディレクトリから登録済み
 プロジェクトを推測する（`main/`のようなサブディレクトリからでも拾える。詳細は後述）。
-`add request`の`project`（依頼先）だけは推測しようがないため引き続き明示必須。`status`/
-`search`の`project`省略は「横断/全プロジェクト対象」という別の意味なので対象外。
+`add request`の`project`（依頼先）だけは推測しようがないため引き続き明示必須。`status`は
+横断表示専用で`project`引数自体を持たず、`search`の`project`省略は「全プロジェクト対象」
+という別の意味なので、どちらも対象外。
 
-### list todos の表示
+### list todo の表示
 
 各項目をGFM（GitHub Flavored Markdown）のタスクリスト記法（`- [ ] ...` / `- [x] ...`）で
 出力する（素の`[ ]`は`mdcat`等でMarkdown化すると1段落にmergeされてしまうため）。作成日時は
@@ -71,8 +74,8 @@ collog help [command...]                  # サブコマンドのヘルプを表
 という形の値なので、位置引数2つだと順序を取り違えやすいため。
 
 内部的には独立テーブルではなく`todos`に`from_project`列を足しただけなので、
-`finish todo`/`search todos`はそのまま使える。`list todos`はrequestも含めて全件表示し
-（見落とし防止）、見出しに`[from: <source_project>]`タグが付く。`list requests`で
+`finish todo`/`search todo`はそのまま使える。`list todo`はrequestも含めて全件表示し
+（見落とし防止）、見出しに`[from: <source_project>]`タグが付く。`list request`で
 requestだけに絞り込める。
 
 ### projectのカレントディレクトリ自動推測
@@ -82,27 +85,28 @@ requestだけに絞り込める。
 いる場合も拾える。ネストした登録が複数一致する場合は最も深いパスを優先する。該当が無く
 `project`も省略されている場合はエラーで終了する（`collog init`を促すメッセージが出る）。
 
-`status`/`search`の`project`省略は「横断/全プロジェクト対象」という別の意味を持つため、
-この自動推測の対象外（挙動は変えていない）。`add request`の`project`（依頼先）も、
-CWDからは「今どのプロジェクトにいるか」しか分からず「どの他プロジェクトへ送るか」は
-推測しようがないため対象外（`--from`（依頼元）は対象）。
+`status`は横断表示専用で`project`引数を持たない。`search`の`project`省略は「全プロジェクト
+対象」という別の意味を持つため、この自動推測の対象外（挙動は変えていない）。`add request`の
+`project`（依頼先）も、CWDからは「今どのプロジェクトにいるか」しか分からず「どの他
+プロジェクトへ送るか」は推測しようがないため対象外（`--from`（依頼元）は対象）。
 
-### status / list changes の表示
+### status / list summary・list change の表示
 
-いずれもMarkdown形式で出力する（`status`は横断時`# collog status` + `## [日時] project`見出し、
-project指定時`# collog status: <project>` + `## 日時`見出し。`list changes`は
-`# collog changes: <project>` + `## 日時`見出し）。`status`の横断表示のみ、標準出力が端末（TTY）
-の場合に本文を冒頭の段落（無ければ400文字付近の文末）でプレビュー表示する（project指定時の
-`status`と`list changes`は常に全文表示）。
+いずれもMarkdown形式で出力する（`status`は`# collog status` + `## [日時] project`見出し、
+`list summary`/`list change`は`# collog list summary: <project>` /
+`# collog list change: <project>` + `## 日時`見出し）。`status`は横断表示専用で、標準出力が
+端末（TTY）の場合に本文を冒頭の段落（無ければ400文字付近の文末）でプレビュー表示する
+（`list summary`/`list change`は常に全文表示）。
 
 出力全体が端末の行数を超える場合のみ自動で`$PAGER`（未設定なら`less`）に通す（3パターンとも
 共通）。パイプ・リダイレクト時（非TTY）はページャを経由せず、省略せず全文を出力する。
 
-並べ替えは`--sort`と`--asc`/`--desc`で指定する。`list changes`の既定は`created_at`昇順
-（changelogを古い方から時系列で読む用途のため）。`status`にproject指定時の既定は`created_at`
-降順（新しい方から。省略時は`--sort {created_at,project}`が選べる）。`-r`は、`-n`件を絞り込んだ
-後の**表示順だけ**を反転する（`status`/`list changes`ともproject指定時のみ有効。例:
-直近3件を古い方から時系列順に読みたい時は`status <project> -n 3 -r`）。
+`list summary`/`list change`の並べ替えは`--sort`と`--asc`/`--desc`で指定する。`list change`の
+既定は`created_at`昇順（changelogを古い方から時系列で読む用途のため）、`list summary`の
+既定は`created_at`降順・`-n 5`（元は`status <project>`として実装していたものを移植した
+挙動をそのまま継承）。`status`（横断表示）の並べ替えは`--sort {created_at,project}`のみ。
+`-r`は、`-n`件を絞り込んだ後の**表示順だけ**を反転する（`list summary`/`list change`のみ。
+例: 直近3件を古い方から時系列順に読みたい時は`list summary <project> -n 3 -r`）。
 
 ### search の表示
 
