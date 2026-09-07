@@ -314,7 +314,7 @@ def cmd_todos(args):
         # GFMのタスクリスト記法（- [ ]/- [x]）。素の「[ ]」はMarkdown上ただの地の文で、
         # 空行の無い連続行が1段落にmergeされてしまう（mdcat等で確認済み）ため、
         # 各項目が独立したリスト項目として扱われるよう「- 」を必ず付ける。
-        header = f"- [{mark}]{tag}" if args.no_id else f"- [{mark}] #{todo_id}{tag}"
+        header = f"- [{mark}] #{todo_id}{tag}" if args.show_id else f"- [{mark}]{tag}"
         lines = body.split("\n")
         print(f"{header} {lines[0]}")
         for line in lines[1:]:
@@ -350,7 +350,7 @@ def _fetch_entries(conn, project, kind, sort_col, ascending, limit):
     sort_colはargparseのchoicesで安全な値に限定済みの前提で、そのままSQLへ埋め込む。
     """
     direction = "ASC" if ascending else "DESC"
-    query = f"SELECT created_at, body FROM entries WHERE project = ? AND kind = ? ORDER BY {sort_col} {direction}"
+    query = f"SELECT id, created_at, body FROM entries WHERE project = ? AND kind = ? ORDER BY {sort_col} {direction}"
     params = [project, kind]
     if limit is not None:
         query += " LIMIT ?"
@@ -358,10 +358,11 @@ def _fetch_entries(conn, project, kind, sort_col, ascending, limit):
     return conn.execute(query, params).fetchall()
 
 
-def _format_dated_entries(title, rows):
+def _format_dated_entries(title, rows, show_id=False):
     parts = [title, ""]
-    for created_at, body in rows:
-        parts.append(f"## {created_at}")
+    for entry_id, created_at, body in rows:
+        heading = f"## {created_at} (#{entry_id})" if show_id else f"## {created_at}"
+        parts.append(heading)
         parts.append("")
         parts.append(body.strip())
         parts.append("")
@@ -459,7 +460,9 @@ def cmd_list_entries(args):
     if args.reverse:
         rows = list(reversed(rows))
     title_word = "summary" if args.kind == "summary" else "changes"
-    _print_or_page(_format_dated_entries(f"# collog list {title_word}: {project}", rows))
+    _print_or_page(_format_dated_entries(
+        f"# collog list {title_word}: {project}", rows, show_id=args.show_id
+    ))
 
 
 def cmd_show(args):
@@ -477,7 +480,7 @@ def cmd_show(args):
         sys.exit(1)
     created_at, body = row
     title = f"# collog show {args.kind}: {project} #{args.id}"
-    _print_or_page(_format_dated_entries(title, [(created_at, body)]))
+    _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
 
 
 def _match_snippet(body, keyword, context=80):
@@ -639,6 +642,7 @@ def build_parser():
         list_sub, "summary", aliases=["summaries"],
         help="SUMMARY履歴を表示（1プロジェクト分。全プロジェクト横断はstatus）",
     )
+    id_help = "#id を表示する（show/finish todoで指定する時など）"
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("-n", type=int, default=5, help="表示件数（既定5）")
     p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
@@ -647,6 +651,7 @@ def build_parser():
     sort_dir.add_argument("--asc", action="store_true", help="昇順で表示")
     sort_dir.add_argument("--desc", action="store_true", help="降順で表示（既定）")
     p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転")
+    p.add_argument("--id", dest="show_id", action="store_true", help=id_help)
     p.set_defaults(func=cmd_list_entries, kind="summary", default_ascending=False)
 
     p = _add_parser_with_hidden_aliases(
@@ -660,6 +665,7 @@ def build_parser():
     sort_dir.add_argument("--asc", action="store_true", help="昇順で表示（既定）")
     sort_dir.add_argument("--desc", action="store_true", help="降順で表示")
     p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転")
+    p.add_argument("--id", dest="show_id", action="store_true", help=id_help)
     p.set_defaults(func=cmd_list_entries, kind="change", default_ascending=True)
 
     p = _add_parser_with_hidden_aliases(
@@ -668,8 +674,8 @@ def build_parser():
     )
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
-    p.add_argument("--no-id", action="store_true",
-                    help="#id を表示しない（finish todoで指定する必要がない、閲覧目的の時向け）")
+    p.add_argument("--id", dest="show_id", action="store_true",
+                    help="#id を表示する（finish todoで指定する時など）")
     p.set_defaults(func=cmd_todos, requests_only=False)
 
     p = _add_parser_with_hidden_aliases(
@@ -678,7 +684,8 @@ def build_parser():
     )
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
-    p.add_argument("--no-id", action="store_true", help="#id を表示しない")
+    p.add_argument("--id", dest="show_id", action="store_true",
+                    help="#id を表示する（finish todoで指定する時など）")
     p.set_defaults(func=cmd_todos, requests_only=True)
 
     p = sub.add_parser("status", help="全プロジェクトのSUMMARY状況を横断表示")
