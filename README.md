@@ -26,12 +26,12 @@ collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list summary [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
+collog list summary [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # SUMMARY履歴を表示（1プロジェクト分。既定: 直近5件・新しい順）
-collog list change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r]
+collog list change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
-collog list todo [project] [--all] [--no-id]  # TODO一覧（既定は未完了のみ、requestも含む）
-collog list request [project] [--all] [--no-id]  # 上記のうちrequestだけに絞り込み
+collog list todo [project] [--all] [--id]  # TODO一覧（既定は未完了のみ、requestも含む）
+collog list request [project] [--all] [--id]  # 上記のうちrequestだけに絞り込み
 
 collog status [--sort created_at|project] [--asc|--desc]
                                            # 全プロジェクトの最新SUMMARYを横断表示
@@ -62,8 +62,15 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 各項目をGFM（GitHub Flavored Markdown）のタスクリスト記法（`- [ ] ...` / `- [x] ...`）で
 出力する（素の`[ ]`は`mdcat`等でMarkdown化すると1段落にmergeされてしまうため）。作成日時は
-表示しない。`#id`は`finish todo`の入力として必須なため既定で表示するが、閲覧目的で邪魔な場合は
-`--no-id`で消せる。
+表示しない。
+
+### #id表示（list summary/change/todo/request共通）
+
+`list`系4種はいずれも`#id`を既定では表示せず、`--id`を付けた時だけ表示する。ファイルへの
+リダイレクトや他ツールへのパイプでは`#id`はノイズになりがちなこと、「一覧を見て気が
+変わったら`--id`付きで実行し直せばよい」という程度の手間で済むことから、全コマンドで
+「既定OFF・`--id`で表示」に統一している（`todo`/`request`は当初`finish todo`のために
+既定表示にしていたが、後から反転した）。
 
 ### request（他プロジェクトからの依頼）
 
