@@ -483,6 +483,88 @@ def cmd_show(args):
     _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
 
 
+def cmd_update_entry(args):
+    body = read_body()
+    validate_body_headings(body)
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    if args.at:
+        cur = conn.execute(
+            "UPDATE entries SET body = ?, created_at = ? WHERE id = ? AND project = ? AND kind = ?",
+            (body, resolve_timestamp(args.at), args.id, project, args.kind),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE entries SET body = ? WHERE id = ? AND project = ? AND kind = ?",
+            (body, args.id, project, args.kind),
+        )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当する{args.kind}が見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: [{args.kind}] {project} #{args.id} を更新しました")
+
+
+def cmd_delete_entry(args):
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    cur = conn.execute(
+        "DELETE FROM entries WHERE id = ? AND project = ? AND kind = ?",
+        (args.id, project, args.kind),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当する{args.kind}が見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: [{args.kind}] {project} #{args.id} を削除しました")
+
+
+def cmd_update_todo(args):
+    body = read_body()
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    if args.at:
+        cur = conn.execute(
+            "UPDATE todos SET body = ?, created_at = ? WHERE id = ? AND project = ?",
+            (body, resolve_timestamp(args.at), args.id, project),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE todos SET body = ? WHERE id = ? AND project = ?",
+            (body, args.id, project),
+        )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当するTODOが見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: TODO #{args.id} ({project}) を更新しました")
+
+
+def cmd_delete_todo(args):
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    cur = conn.execute(
+        "DELETE FROM todos WHERE id = ? AND project = ?", (args.id, project)
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当するTODOが見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: TODO #{args.id} ({project}) を削除しました")
+
+
 def _match_snippet(body, keyword, context=80):
     """本文中でkeywordが最初に現れる位置の前後を切り出す（大小文字は区別しない）。
 
@@ -722,6 +804,36 @@ def build_parser():
                         help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_show, kind=kind)
+
+    update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODOの本文を書き換える")
+    update_sub = update_p.add_subparsers(dest="update_target", required=True)
+
+    for name, kind in [("summary", "summary"), ("change", "change")]:
+        p = update_sub.add_parser(name, help=f"指定idの{kind}の本文を標準入力の内容で置き換える")
+        p.add_argument("project", nargs="?", default=None, help=project_help)
+        p.add_argument("id", type=int)
+        p.add_argument("--at", default=None, help=at_help)
+        p.set_defaults(func=cmd_update_entry, kind=kind)
+
+    p = update_sub.add_parser("todo", help="指定idのTODOの本文を標準入力の内容で置き換える")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
+    p.add_argument("id", type=int)
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_update_todo)
+
+    delete_p = sub.add_parser("delete", help="SUMMARY/CHANGES/TODOを削除する")
+    delete_sub = delete_p.add_subparsers(dest="delete_target", required=True)
+
+    for name, kind in [("summary", "summary"), ("change", "change")]:
+        p = delete_sub.add_parser(name, help=f"指定idの{kind}を削除する")
+        p.add_argument("project", nargs="?", default=None, help=project_help)
+        p.add_argument("id", type=int)
+        p.set_defaults(func=cmd_delete_entry, kind=kind)
+
+    p = delete_sub.add_parser("todo", help="指定idのTODOを削除する")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_delete_todo)
 
     p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
     p.add_argument("command", nargs="*", default=[],
