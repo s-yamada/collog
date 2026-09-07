@@ -43,6 +43,9 @@ collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
 collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
 collog delete summary|change|todo [project] <id>              # 削除
 
+collog export [project]                   # データをJSON形式で書き出す（省略時は全プロジェクト）
+collog import                              # 標準入力のJSON（exportの出力形式）を取り込む
+
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
 
@@ -147,6 +150,25 @@ requestだけに絞り込める。
 やすくなったのを機に、「間違えたら直したい・消したい」という実需要を優先して
 方針を転換した。対象を直近1件だけに絞る`amend`/`undo`方式（gitの`commit --amend`の
 ような発想）も検討したが、任意のidを指定できる汎用コマンドとして実装している。
+
+### export/import（データの持ち出し・持ち込み）
+
+`export [project]`（省略時は全プロジェクト）でJSON形式に書き出し、`import`で
+標準入力から取り込む。バックアップ、他マシンへの移行、他プロジェクトへの共有が
+主な用途。
+
+形式は普通のJSON（`{"projects": [...], "entries": [...], "todos": [...]}`）。
+NDJSON・YAML・SQLダンプも検討したが、3テーブルをまとめる自然さと「標準ライブラリ
+のみで完結する」原則（YAMLは`pyyaml`等の外部パッケージが必要）を優先し、通常の
+JSONにした（`ensure_ascii=False`で出力し、日本語が`\uXXXX`エスケープされて
+読みにくくなるのを防いでいる）。
+
+importは元の`id`を使わず新規`INSERT`する（別DBへの取り込みでのid衝突を回避。
+`created_at`/`completed_at`/`from_project`等は元の値を保持）。未登録の
+プロジェクトはexport内の`path`で自動`init`する。`entries`/`todos`が参照する
+プロジェクト（`from_project`含む）が「既に登録済み」でも「importデータの
+`projects`に含まれる」でもない場合はエラーで拒否する（依存関係が欠けた不完全な
+取り込みを防ぐ）。重複排除はしない。
 
 ### rename（プロジェクト名の変更）
 
