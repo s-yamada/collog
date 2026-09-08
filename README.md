@@ -163,12 +163,21 @@ NDJSON・YAML・SQLダンプも検討したが、3テーブルをまとめる自
 JSONにした（`ensure_ascii=False`で出力し、日本語が`\uXXXX`エスケープされて
 読みにくくなるのを防いでいる）。
 
-importは元の`id`を使わず新規`INSERT`する（別DBへの取り込みでのid衝突を回避。
-`created_at`/`completed_at`/`from_project`等は元の値を保持）。未登録の
-プロジェクトはexport内の`path`で自動`init`する。`entries`/`todos`が参照する
-プロジェクト（`from_project`含む）が「既に登録済み」でも「importデータの
-`projects`に含まれる」でもない場合はエラーで拒否する（依存関係が欠けた不完全な
-取り込みを防ぐ）。重複排除はしない。
+importはデフォルトで`INSERT OR REPLACE`を使う。`entries`/`todos`が元の`id`を
+持っていればそのidで（既存があれば上書き）、持っていなければ新規`INSERT`（自動
+採番）する。`projects`も`name`が既存なら上書き（`path`が環境によって異なる
+場合は上書き後に自分で`init`し直す想定）。「exportした内容がそのまま入る」を
+優先した設計で、`mysql < backup.dmp`のようにリストア作業が素直に成功すること
+を重視している。
+
+重複を確認しながら安全に倒したい場合は`--safety`を付ける。プレーンな`INSERT`に
+なり、`id`/`name`が重複していればエラーで中断し、そのimport全体をロールバック
+する（一部だけ反映される状態にはならない）。
+
+未登録のプロジェクトはexport内の`path`で自動`init`する。`entries`/`todos`が
+参照するプロジェクト（`from_project`含む）が「既に登録済み」でも「import
+データの`projects`に含まれる」でもない場合はエラーで拒否する（依存関係が
+欠けた不完全な取り込みを防ぐ）。
 
 ### rename（プロジェクト名の変更）
 

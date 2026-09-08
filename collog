@@ -661,37 +661,64 @@ def cmd_import(args):
                 )
                 sys.exit(1)
 
+    # --safety指定時はプレーンなINSERT（重複はエラーで中断）、デフォルトはINSERT OR REPLACEで
+    # 「exportした内容がそのまま入る」を優先する（mysql < backup.dmp と同じ考え方）。
+    insert_or = "" if args.safety else "OR REPLACE "
     ts = now()
-    projects_created = 0
-    for proj in projects_in:
-        name = proj["name"]
-        if conn.execute("SELECT 1 FROM projects WHERE name = ?", (name,)).fetchone():
-            continue
-        path = proj.get("path") or os.getcwd()
-        conn.execute(
-            "INSERT INTO projects (name, path, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (name, path, proj.get("created_at", ts), proj.get("updated_at", ts)),
-        )
-        projects_created += 1
-        if not os.path.isdir(path):
-            print(f"警告: プロジェクト '{name}' のパス '{path}' はディレクトリとして存在しません",
-                  file=sys.stderr)
+    try:
+        with conn:
+            projects_created = 0
+            for proj in projects_in:
+                name = proj["name"]
+                is_new = not conn.execute(
+                    "SELECT 1 FROM projects WHERE name = ?", (name,)
+                ).fetchone()
+                path = proj.get("path") or os.getcwd()
+                conn.execute(
+                    f"INSERT {insert_or}INTO projects (name, path, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (name, path, proj.get("created_at", ts), proj.get("updated_at", ts)),
+                )
+                if is_new:
+                    projects_created += 1
+                if not os.path.isdir(path):
+                    print(f"警告: プロジェクト '{name}' のパス '{path}' はディレクトリとして存在しません",
+                          file=sys.stderr)
 
-    for e in entries_in:
-        conn.execute(
-            "INSERT INTO entries (project, kind, created_at, body) VALUES (?, ?, ?, ?)",
-            (e["project"], e["kind"], e["created_at"], e["body"]),
-        )
+            for e in entries_in:
+                if e.get("id") is not None:
+                    conn.execute(
+                        f"INSERT {insert_or}INTO entries (id, project, kind, created_at, body) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (e["id"], e["project"], e["kind"], e["created_at"], e["body"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO entries (project, kind, created_at, body) VALUES (?, ?, ?, ?)",
+                        (e["project"], e["kind"], e["created_at"], e["body"]),
+                    )
 
-    for t in todos_in:
-        conn.execute(
-            "INSERT INTO todos (project, created_at, completed_at, from_project, body) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (t["project"], t["created_at"], t.get("completed_at"),
-             t.get("from_project"), t["body"]),
-        )
+            for t in todos_in:
+                if t.get("id") is not None:
+                    conn.execute(
+                        f"INSERT {insert_or}INTO todos "
+                        "(id, project, created_at, completed_at, from_project, body) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (t["id"], t["project"], t["created_at"], t.get("completed_at"),
+                         t.get("from_project"), t["body"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO todos (project, created_at, completed_at, from_project, body) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (t["project"], t["created_at"], t.get("completed_at"),
+                         t.get("from_project"), t["body"]),
+                    )
+    except sqlite3.IntegrityError as ex:
+        print(f"エラー: ID/name重複のため中断しました（--safety指定時はREPLACEされません）: {ex}",
+              file=sys.stderr)
+        sys.exit(1)
 
-    conn.commit()
     print(
         f"OK: インポート完了 (projects: {projects_created}件新規登録, "
         f"entries: {len(entries_in)}件, todos: {len(todos_in)}件)"
@@ -974,6 +1001,8 @@ def build_parser():
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("import", help="標準入力のJSON（exportの出力形式）を取り込む")
+    p.add_argument("--safety", action="store_true",
+                    help="ID/name重複時にエラーで中断する（デフォルトはINSERT OR REPLACEで上書き）")
     p.set_defaults(func=cmd_import)
 
     p = sub.add_parser("help", help="サブコマンドのヘルプを表示（'collog <cmd> -h' と同じ）")
