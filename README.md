@@ -36,8 +36,8 @@ collog list request [project] [--all] [--id]  # 上記のうちrequestだけに�
 collog status [--sort created_at|project] [--asc|--desc]
                                            # 全プロジェクトの最新SUMMARYを横断表示
 
-collog search summary|change|todo|all <keyword> [project]
-                                           # 本文にkeywordを含む記録を横断検索
+collog search summary|change|todo|all <keyword> [project] [--global|-g]
+                                           # 本文にkeywordを含む記録を検索（既定はカレントディレクトリのプロジェクトのみ）
 collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
 
 collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
@@ -54,7 +54,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と照合して推測（サブディレクトリからでも可）
 - 複数該当する場合は最も深いパスを優先
 - 該当なしかつ`project`も省略の場合はエラー（`collog init`を促すメッセージ）
-- 対象外: `status`（`project`引数を持たない）、`search`の`project`省略（全プロジェクト対象の意味）、`add request`の`project`（依頼先）
+- 対象外: `status`（`project`引数を持たない）、`add request`の`project`（依頼先）
 
 ### status / list summary・list change の表示
 
@@ -78,7 +78,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `entries`（summary/change）と`todos`の両方を対象に、本文の部分一致（大小文字区別なし）で検索
 - ヒット箇所前後（既定80文字）のスニペットを表示
 - todoのヒットは`#id`と完了状態（`[x]`/`[ ]`）も表示
-- `project`省略時は全プロジェクト横断
+- `project`省略時はカレントディレクトリから推測（他コマンドと同じCWD自動推測）。全プロジェクト横断で検索したい場合は`--global`/`-g`を付ける（`project`とは同時指定不可）
 - summary/changeの`#id`は`show summary|change <project> <id>`で全文表示できる
 - 単純な部分一致のため、複合語をまたいだ誤ヒットがありうる（例: `PDO`で`BitmapDocument`にヒット）
 

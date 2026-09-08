@@ -744,6 +744,11 @@ def _match_snippet(body, keyword, context=80):
 
 def cmd_search(args):
     conn = get_conn()
+    if args.all_projects and args.project:
+        print("エラー: projectと--global/-gは同時に指定できません", file=sys.stderr)
+        sys.exit(1)
+    project = None if args.all_projects else _resolve_project(args.project, conn)
+
     keyword_lower = args.keyword.lower()
     kinds = [args.kind] if args.kind else ["summary", "change", "todo"]
     matches = []  # (created_at, header, snippet)
@@ -753,25 +758,25 @@ def cmd_search(args):
         placeholders = ",".join("?" * len(entry_kinds))
         query = f"SELECT id, created_at, kind, project, body FROM entries WHERE kind IN ({placeholders})"
         params = list(entry_kinds)
-        if args.project:
+        if project:
             query += " AND project = ?"
-            params.append(args.project)
-        for entry_id, created_at, kind, project, body in conn.execute(query, params).fetchall():
+            params.append(project)
+        for entry_id, created_at, kind, project_name, body in conn.execute(query, params).fetchall():
             if keyword_lower in body.lower():
-                header = f"## [{created_at}] {project} ({kind} #{entry_id})"
+                header = f"## [{created_at}] {project_name} ({kind} #{entry_id})"
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if "todo" in kinds:
         query = "SELECT id, created_at, completed_at, from_project, project, body FROM todos"
         params = []
-        if args.project:
+        if project:
             query += " WHERE project = ?"
-            params.append(args.project)
-        for todo_id, created_at, completed_at, from_project, project, body in conn.execute(query, params).fetchall():
+            params.append(project)
+        for todo_id, created_at, completed_at, from_project, project_name, body in conn.execute(query, params).fetchall():
             if keyword_lower in body.lower():
                 mark = "x" if completed_at else " "
                 tag = f" from: {from_project}" if from_project else ""
-                header = f"## [{created_at}] {project} (todo #{todo_id} [{mark}]{tag})"
+                header = f"## [{created_at}] {project_name} (todo #{todo_id} [{mark}]{tag})"
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if not matches:
@@ -951,8 +956,9 @@ def build_parser():
     for name, aliases, kind, help_text in search_targets:
         p = _add_parser_with_hidden_aliases(search_sub, name, aliases=aliases, help=help_text)
         p.add_argument("keyword")
-        p.add_argument("project", nargs="?", default=None,
-                        help="指定するとそのプロジェクトのみ検索（省略時は全プロジェクト横断）")
+        p.add_argument("project", nargs="?", default=None, help=project_help)
+        p.add_argument("--global", "-g", dest="all_projects", action="store_true",
+                        help="全プロジェクトを横断して検索する（projectとは同時指定不可）")
         p.set_defaults(func=cmd_search, kind=kind)
 
     show_p = sub.add_parser("show", help="SUMMARY/CHANGESを1件だけ表示する")
