@@ -44,152 +44,74 @@ collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標�
 collog delete summary|change|todo [project] <id>              # 削除
 
 collog export [project]                   # データをJSON形式で書き出す（省略時は全プロジェクト）
-collog import                              # 標準入力のJSON（exportの出力形式）を取り込む
+collog import [--safety]                  # 標準入力のJSON（exportの出力形式）を取り込む
 
 collog help [command...]                  # サブコマンドのヘルプを表示（'<cmd> -h'と同じ）
 ```
 
-`add`/`list`/`finish`/`search`/`show`は、それぞれさらに対象（`summary`/`change`/`todo`等）を
-指定する2段階のサブコマンドになっている。対象名は`add`/`finish`/`show`と同じ単数形
-（`summary`/`change`/`todo`/`request`）で統一している——`list`/`search`は元々複数形
-（`todos`/`summaries`等）だったが、動詞によって種別名の数が違うと覚えにくいため単数形に
-揃えた（複数形は入力としてのみ受け付ける非表示エイリアス。`list todo`↔`list todos`など。
-ただし`search all`だけは省略・複数形化していない——検索キーワード自体が種別名と偶然
-一致した場合に誤動作するため、明示必須のまま）。各サブコマンドの詳細は`collog <cmd> -h`
-または `collog help <cmd> [<サブコマンド>]`（例: `collog help add summary`）で確認できる。
-
-`[project]`と書かれている箇所は省略可能で、省略するとカレントディレクトリから登録済み
-プロジェクトを推測する（`main/`のようなサブディレクトリからでも拾える。詳細は後述）。
-`add request`の`project`（依頼先）だけは推測しようがないため引き続き明示必須。`status`は
-横断表示専用で`project`引数自体を持たず、`search`の`project`省略は「全プロジェクト対象」
-という別の意味なので、どちらも対象外。
-
-### list todo の表示
-
-各項目をGFM（GitHub Flavored Markdown）のタスクリスト記法（`- [ ] ...` / `- [x] ...`）で
-出力する（素の`[ ]`は`mdcat`等でMarkdown化すると1段落にmergeされてしまうため）。作成日時は
-表示しない。
-
-### #id表示（list summary/change/todo/request共通）
-
-`list`系4種はいずれも`#id`を既定では表示せず、`--id`を付けた時だけ表示する。ファイルへの
-リダイレクトや他ツールへのパイプでは`#id`はノイズになりがちなこと、「一覧を見て気が
-変わったら`--id`付きで実行し直せばよい」という程度の手間で済むことから、全コマンドで
-「既定OFF・`--id`で表示」に統一している（`todo`/`request`は当初`finish todo`のために
-既定表示にしていたが、後から反転した）。
-
-### request（他プロジェクトからの依頼）
-
-`add request <project> [--from <source_project>]`で、他プロジェクトからの依頼をTODOとして
-記録する。`project`（依頼先）は明示必須、`--from`（依頼元）は省略するとカレントディレクトリ
-から推測される（依頼を登録する時は大抵、依頼元のディレクトリで作業しているはずのため）。
-`--from`を名前付きフラグにしているのは、`project`と`source_project`が同じ「プロジェクト名」
-という形の値なので、位置引数2つだと順序を取り違えやすいため。
-
-内部的には独立テーブルではなく`todos`に`from_project`列を足しただけなので、
-`finish todo`/`search todo`はそのまま使える。`list todo`はrequestも含めて全件表示し
-（見落とし防止）、見出しに`[from: <source_project>]`タグが付く。`list request`で
-requestだけに絞り込める。
-
 ### projectのカレントディレクトリ自動推測
 
-`[project]`と書かれているコマンドは、省略すると`os.getcwd()`を登録済み`projects.path`と
-照合してプロジェクトを推測する。完全一致だけでなく、そのサブディレクトリ（`main/`等）に
-いる場合も拾える。ネストした登録が複数一致する場合は最も深いパスを優先する。該当が無く
-`project`も省略されている場合はエラーで終了する（`collog init`を促すメッセージが出る）。
-
-`status`は横断表示専用で`project`引数を持たない。`search`の`project`省略は「全プロジェクト
-対象」という別の意味を持つため、この自動推測の対象外（挙動は変えていない）。`add request`の
-`project`（依頼先）も、CWDからは「今どのプロジェクトにいるか」しか分からず「どの他
-プロジェクトへ送るか」は推測しようがないため対象外（`--from`（依頼元）は対象）。
+- `[project]`省略時、カレントディレクトリを登録済み`projects.path`と照合して推測（サブディレクトリからでも可）
+- 複数該当する場合は最も深いパスを優先
+- 該当なしかつ`project`も省略の場合はエラー（`collog init`を促すメッセージ）
+- 対象外: `status`（`project`引数を持たない）、`search`の`project`省略（全プロジェクト対象の意味）、`add request`の`project`（依頼先）
 
 ### status / list summary・list change の表示
 
-いずれもMarkdown形式で出力する（`status`は`# collog status` + `## [日時] project`見出し、
-`list summary`/`list change`は`# collog list summary: <project>` /
-`# collog list change: <project>` + `## 日時`見出し）。`status`は横断表示専用で、標準出力が
-端末（TTY）の場合に本文を冒頭の段落（無ければ400文字付近の文末）でプレビュー表示する
-（`list summary`/`list change`は常に全文表示）。
+- いずれもMarkdown形式で出力
+- `status`は端末（TTY）出力時のみ本文をプレビュー表示。`list summary`/`list change`は常に全文
+- 出力が端末の行数を超える場合は自動で`$PAGER`（既定`less`）に通す。パイプ・リダイレクト時はそのまま全文出力
+- `list summary`/`list change`は`--sort`/`--asc`/`--desc`/`-r`で並べ替え可能（既定: `list change`は`created_at`昇順、`list summary`は`created_at`降順・直近5件）
+- `status`の並べ替えは`--sort {created_at,project}`のみ
 
-出力全体が端末の行数を超える場合のみ自動で`$PAGER`（未設定なら`less`）に通す（3パターンとも
-共通）。パイプ・リダイレクト時（非TTY）はページャを経由せず、省略せず全文を出力する。
+### list todo の表示
 
-`list summary`/`list change`の並べ替えは`--sort`と`--asc`/`--desc`で指定する。`list change`の
-既定は`created_at`昇順（changelogを古い方から時系列で読む用途のため）、`list summary`の
-既定は`created_at`降順・`-n 5`（元は`status <project>`として実装していたものを移植した
-挙動をそのまま継承）。`status`（横断表示）の並べ替えは`--sort {created_at,project}`のみ。
-`-r`は、`-n`件を絞り込んだ後の**表示順だけ**を反転する（`list summary`/`list change`のみ。
-例: 直近3件を古い方から時系列順に読みたい時は`list summary <project> -n 3 -r`）。
+- タスクリスト記法（`- [ ] ...` / `- [x] ...`）で出力
+- 作成日時は非表示
+
+### #id表示（list summary/change/todo/request共通）
+
+- 既定では非表示、`--id`を付けた時だけ表示
 
 ### search の表示
 
-本文にキーワードを含む記録を、`entries`（summary/change）と`todos`の両方から検索する。
-大小文字は区別しない部分一致で、ヒット箇所の前後（既定80文字ずつ）を切り出した
-スニペットを表示する（grepのcontext表示に近い形）。todoのヒットは`#id`と完了状態
-（`[x]`/`[ ]`）も見出しに含める。`project`は省略可（省略時は全プロジェクト横断）。
+- `entries`（summary/change）と`todos`の両方を対象に、本文の部分一致（大小文字区別なし）で検索
+- ヒット箇所前後（既定80文字）のスニペットを表示
+- todoのヒットは`#id`と完了状態（`[x]`/`[ ]`）も表示
+- `project`省略時は全プロジェクト横断
+- summary/changeの`#id`は`show summary|change <project> <id>`で全文表示できる
+- 単純な部分一致のため、複合語をまたいだ誤ヒットがありうる（例: `PDO`で`BitmapDocument`にヒット）
 
-単純な部分一致のため、複合語の境界をまたいだ偶然の一致がありうる（例: `PDO`で検索すると
-`BitmapDocument`にヒットすることがある）。単語境界を意識した検索は日本語との相性が
-悪いため、今のところ見送っている。
+### request（他プロジェクトからの依頼）
 
-見出しには`#id`を含める（summary/changeも含め全種別）。summary/changeの`#id`は
-`show summary|change <project> <id>`に渡すと、その1件だけを全文表示できる
-（スニペットで気になった記録を、そのまま全文で確認する用途）。
+- `add request <project> [--from <source_project>]`で他プロジェクトからの依頼をTODOとして記録
+- `project`（依頼先）は明示必須、`--from`（依頼元）は省略するとカレントディレクトリから推測
+- `list todo`はrequestも含めて全件表示（見出しに`[from: <source_project>]`が付く）
+- `list request`でrequestだけに絞り込み
+- 完了操作は通常のtodoと同じ`finish todo`
 
 ### update/delete（訂正・削除）
 
-`update summary|change|todo [project] <id> [--at 日時]`で本文を標準入力の内容で
-置き換え、`delete summary|change|todo [project] <id>`で削除する。`update`は`add`と
-同様、本文の見出しレベル制約（`#`/`##`禁止）を検証する。`project`/`kind`/`id`の
-組み合わせが一致しない場合はエラーで拒否する（他プロジェクト・他kindのidを
-誤って指定した場合の誤爆防止）。
-
-`entries`（summary/change）は元々「追記したら書き換えない」という設計方針だった
-（`todos`だけ完了マークで`UPDATE`が発生するため別テーブルにした、という経緯もこの
-前提あってのもの）。`list summary`/`list change`にも`--id`が付いて`show`と組み合わせ
-やすくなったのを機に、「間違えたら直したい・消したい」という実需要を優先して
-方針を転換した。対象を直近1件だけに絞る`amend`/`undo`方式（gitの`commit --amend`の
-ような発想）も検討したが、任意のidを指定できる汎用コマンドとして実装している。
+- `update summary|change|todo [project] <id> [--at 日時]`で本文を標準入力の内容に置き換え
+- `delete summary|change|todo [project] <id>`で削除
+- `update`は`add`と同様、見出しレベル制約（`#`/`##`禁止）を検証
+- `project`/`kind`/`id`の組み合わせが一致しない場合はエラー
 
 ### export/import（データの持ち出し・持ち込み）
 
-`export [project]`（省略時は全プロジェクト）でJSON形式に書き出し、`import`で
-標準入力から取り込む。バックアップ、他マシンへの移行、他プロジェクトへの共有が
-主な用途。
-
-形式は普通のJSON（`{"projects": [...], "entries": [...], "todos": [...]}`）。
-NDJSON・YAML・SQLダンプも検討したが、3テーブルをまとめる自然さと「標準ライブラリ
-のみで完結する」原則（YAMLは`pyyaml`等の外部パッケージが必要）を優先し、通常の
-JSONにした（`ensure_ascii=False`で出力し、日本語が`\uXXXX`エスケープされて
-読みにくくなるのを防いでいる）。
-
-importはデフォルトで`INSERT OR REPLACE`を使う。`entries`/`todos`が元の`id`を
-持っていればそのidで（既存があれば上書き）、持っていなければ新規`INSERT`（自動
-採番）する。`projects`も`name`が既存なら上書き（`path`が環境によって異なる
-場合は上書き後に自分で`init`し直す想定）。「exportした内容がそのまま入る」を
-優先した設計で、`mysql < backup.dmp`のようにリストア作業が素直に成功すること
-を重視している。
-
-重複を確認しながら安全に倒したい場合は`--safety`を付ける。プレーンな`INSERT`に
-なり、`id`/`name`が重複していればエラーで中断し、そのimport全体をロールバック
-する（一部だけ反映される状態にはならない）。
-
-未登録のプロジェクトはexport内の`path`で自動`init`する。`entries`/`todos`が
-参照するプロジェクト（`from_project`含む）が「既に登録済み」でも「import
-データの`projects`に含まれる」でもない場合はエラーで拒否する（依存関係が
-欠けた不完全な取り込みを防ぐ）。
+- `export [project]`（省略時は全プロジェクト）でJSON形式に書き出し
+- `import`で標準入力から取り込み（デフォルトは`INSERT OR REPLACE`、`--safety`でエラー中断に切り替え）
+- `entries`/`todos`は元の`id`があれば上書き、無ければ自動採番で新規追加
+- `projects`も`name`が既存なら上書き（`path`が異なる環境へ移行した場合はimport後に`init`で設定し直す）
+- `--safety`指定時は`id`/`name`の重複でエラー中断し、import全体をロールバック
+- 未登録のプロジェクトはexport内の`path`で自動`init`
+- 参照先プロジェクトが未登録かつimportデータにも含まれない場合はエラー
 
 ### rename（プロジェクト名の変更）
 
-`rename [old_name] <new_name>`で登録済みプロジェクトの名前を変更する（`old_name`は他の
-`[project]`引数と同様、省略するとカレントディレクトリから推測される）。`projects.name`
-だけでなく、`entries.project`・`todos.project`・`todos.from_project`（requestの依頼元
-参照）も1トランザクションでまとめて更新する。`path`は変更しないため、CWD自動推測は
-rename後もそのディレクトリから引き続き機能する。
-
-`mv`（Unixの慣習）ではなく`rename`にしたのは、`mv`だと「移動」＝パス変更を連想させ、
-既にパス変更は`init`の役割なので紛らわしいため。ここでやりたいのは識別子（名前）の
-変更なので`rename`が実態に合う。
+- `rename [old_name] <new_name>`でプロジェクト名を変更
+- `projects.name`・`entries.project`・`todos.project`・`todos.from_project`をまとめて更新
+- `path`は変更しないため、CWD自動推測はrename後も引き続き機能
 
 ## 備考
 
