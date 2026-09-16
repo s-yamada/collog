@@ -297,25 +297,21 @@ def cmd_finish_todo(args):
     print(f"OK: TODO #{args.id} ({project}) を完了にしました")
 
 
-def cmd_todos(args):
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    query = "SELECT id, created_at, completed_at, from_project, body FROM todos WHERE project = ?"
-    params = [project]
-    if args.requests_only:
-        query += " AND from_project IS NOT NULL"
-    query += " ORDER BY created_at"
-    rows = conn.execute(query, params).fetchall()
+def _print_todo_list(rows, show_all, show_id):
+    """(id, created_at, completed_at, from_project, body)の行リストをタスクリスト形式で表示する。
+
+    表示した件数を返す（0件かどうかの判定を呼び出し元に委ねるため）。
+    """
     shown = 0
     for todo_id, created_at, completed_at, from_project, body in rows:
-        if not args.all and completed_at is not None:
+        if not show_all and completed_at is not None:
             continue
         mark = "x" if completed_at else " "
         tag = f" [from: {from_project}]" if from_project else ""
         # GFMのタスクリスト記法（- [ ]/- [x]）。素の「[ ]」はMarkdown上ただの地の文で、
         # 空行の無い連続行が1段落にmergeされてしまう（mdcat等で確認済み）ため、
         # 各項目が独立したリスト項目として扱われるよう「- 」を必ず付ける。
-        header = f"- [{mark}] #{todo_id}{tag}" if args.show_id else f"- [{mark}]{tag}"
+        header = f"- [{mark}] #{todo_id}{tag}" if show_id else f"- [{mark}]{tag}"
         lines = body.split("\n")
         print(f"{header} {lines[0]}")
         for line in lines[1:]:
@@ -324,9 +320,55 @@ def cmd_todos(args):
         if len(lines) > 1:
             print()
         shown += 1
-    if shown == 0:
-        label = "REQUEST" if args.requests_only else "TODO"
-        print(f"（{project} に該当する{label}はありません）")
+    return shown
+
+
+def cmd_todos(args):
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    rows = conn.execute(
+        "SELECT id, created_at, completed_at, from_project, body FROM todos "
+        "WHERE project = ? ORDER BY created_at",
+        (project,),
+    ).fetchall()
+    if _print_todo_list(rows, args.all, args.show_id) == 0:
+        print(f"（{project} に該当するTODOはありません）")
+
+
+def cmd_request(args):
+    conn = get_conn()
+    if args.project is None:
+        # 横断表示: 全プロジェクトのrequest（from_projectがあるtodo）をプロジェクトごとに
+        # まとめて表示する。対応漏れ（他プロジェクトへの依頼が放置されていないか）の
+        # チェック用途を想定しているため、既定は未完了のみ（--allで完了分も含む）。
+        rows = conn.execute(
+            "SELECT project, id, created_at, completed_at, from_project, body FROM todos "
+            "WHERE from_project IS NOT NULL ORDER BY project, created_at"
+        ).fetchall()
+        by_project = {}
+        for project, todo_id, created_at, completed_at, from_project, body in rows:
+            if not args.all and completed_at is not None:
+                continue
+            by_project.setdefault(project, []).append(
+                (todo_id, created_at, completed_at, from_project, body)
+            )
+        if not by_project:
+            print("（該当するREQUESTはありません）")
+            return
+        for i, project in enumerate(sorted(by_project)):
+            if i > 0:
+                print()
+            print(f"### {project}")
+            _print_todo_list(by_project[project], True, args.show_id)
+    else:
+        project = _resolve_project(args.project, conn)
+        rows = conn.execute(
+            "SELECT id, created_at, completed_at, from_project, body FROM todos "
+            "WHERE project = ? AND from_project IS NOT NULL ORDER BY created_at",
+            (project,),
+        ).fetchall()
+        if _print_todo_list(rows, args.all, args.show_id) == 0:
+            print(f"（{project} に該当するREQUESTはありません）")
 
 
 def _print_or_page(output):
@@ -398,10 +440,8 @@ def _preview_paragraph(body, limit=400):
     return body[:cut].strip(), True
 
 
-def cmd_status(args):
-    # statusは横断表示専用（全プロジェクトの最新SUMMARYを1件ずつ）。
-    # 1プロジェクトのSUMMARY履歴を見たい場合は`list summary <project>`を使う。
-    conn = get_conn()
+def _cmd_summary_cross(args, conn):
+    """summaryの横断表示（project省略時）: 全プロジェクトの最新SUMMARYを1件ずつ。"""
     direction = "ASC" if args.asc else "DESC"
     rows = conn.execute(
         f"""
@@ -425,7 +465,7 @@ def cmd_status(args):
         return
 
     is_tty = sys.stdout.isatty()
-    parts = ["# collog status", ""]
+    parts = ["# collog summary", ""]
     for project, created_at, body in rows:
         parts.append(f"## [{created_at}] {project}")
         parts.append("")
@@ -440,13 +480,12 @@ def cmd_status(args):
     _print_or_page("\n".join(parts).rstrip("\n") + "\n")
 
 
-def cmd_list_entries(args):
-    """list summary / list change 共通の1プロジェクト分の一覧表示。
+def _cmd_entry_history(args, conn, kind):
+    """summary/change共通の1プロジェクト分の履歴表示。
 
     既定の並べ替え方向はkindごとに異なる（changeは元々「古い順」、summaryは
     「新しい順」）ため、--asc/--desc未指定時はargs.default_ascendingに従う。
     """
-    conn = get_conn()
     project = _resolve_project(args.project, conn)
     if args.asc:
         ascending = True
@@ -454,16 +493,41 @@ def cmd_list_entries(args):
         ascending = False
     else:
         ascending = args.default_ascending
-    rows = _fetch_entries(conn, project, args.kind, args.sort, ascending, args.n)
+    rows = _fetch_entries(conn, project, kind, args.sort, ascending, args.n)
     if not rows:
         print(f"(記録なし: {project})", file=sys.stderr)
         return
     if args.reverse:
         rows = list(reversed(rows))
-    title_word = "summary" if args.kind == "summary" else "changes"
     _print_or_page(_format_dated_entries(
-        f"# collog list {title_word}: {project}", rows, show_id=args.show_id
+        f"# collog {kind}: {project}", rows, show_id=args.show_id
     ))
+
+
+def cmd_summary(args):
+    conn = get_conn()
+    if args.project is None:
+        if args.sort == "id":
+            print(
+                "エラー: project省略時（全プロジェクト横断）の--sortはcreated_at/projectのみ"
+                "指定できます。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _cmd_summary_cross(args, conn)
+    else:
+        if args.sort == "project":
+            print(
+                "エラー: project指定時の--sortはcreated_at/idのみ指定できます。",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _cmd_entry_history(args, conn, "summary")
+
+
+def cmd_change(args):
+    conn = get_conn()
+    _cmd_entry_history(args, conn, "change")
 
 
 def cmd_show(args):
@@ -828,7 +892,11 @@ def _add_parser_with_hidden_aliases(subparsers_action, name, aliases=(), **kwarg
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="collog", description="プロジェクト横断トラッカー")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(
+        dest="cmd", required=True,
+        metavar="{init,projects,rename,add,finish,summary,change,todo,request,"
+                 "search,show,update,delete,export,import,help}",
+    )
 
     p = sub.add_parser("init", help="プロジェクトを登録する（既存なら path を更新）")
     p.add_argument("project")
@@ -881,28 +949,28 @@ def build_parser():
     p.add_argument("--at", default=None, help="完了日時を指定して遡って記録する（同上の形式）")
     p.set_defaults(func=cmd_finish_todo)
 
-    list_p = sub.add_parser("list", help="SUMMARY/CHANGES/TODOの一覧を表示する")
-    list_sub = list_p.add_subparsers(dest="list_target", required=True,
-                                      metavar="{summary,change,todo,request}")
+    id_help = "#id を表示する（show/finish todoで指定する時など）"
 
     p = _add_parser_with_hidden_aliases(
-        list_sub, "summary", aliases=["summaries"],
-        help="SUMMARY履歴を表示（1プロジェクト分。全プロジェクト横断はstatus）",
+        sub, "summary", aliases=["summaries"],
+        help="SUMMARYを表示する（省略時は全プロジェクト横断、指定時はそのプロジェクトの履歴）",
     )
-    id_help = "#id を表示する（show/finish todoで指定する時など）"
-    p.add_argument("project", nargs="?", default=None, help=project_help)
-    p.add_argument("-n", type=int, default=5, help="表示件数（既定5）")
-    p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
-                    help="並べ替えに使う列（既定: created_at）")
+    p.add_argument("project", nargs="?", default=None,
+                    help="省略時は全プロジェクトを横断表示（各プロジェクトの最新1件）")
+    p.add_argument("-n", type=int, default=5, help="表示件数（プロジェクト指定時のみ有効。既定5）")
+    p.add_argument("--sort", choices=["created_at", "id", "project"], default="created_at",
+                    help="並べ替えに使う列（プロジェクト指定時: created_at/id、"
+                         "省略時: created_at/project。既定: created_at）")
     sort_dir = p.add_mutually_exclusive_group()
     sort_dir.add_argument("--asc", action="store_true", help="昇順で表示")
     sort_dir.add_argument("--desc", action="store_true", help="降順で表示（既定）")
-    p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転")
+    p.add_argument("-r", "--reverse", action="store_true",
+                    help="表示順だけ反転（プロジェクト指定時のみ有効）")
     p.add_argument("--id", dest="show_id", action="store_true", help=id_help)
-    p.set_defaults(func=cmd_list_entries, kind="summary", default_ascending=False)
+    p.set_defaults(func=cmd_summary, default_ascending=False)
 
     p = _add_parser_with_hidden_aliases(
-        list_sub, "change", aliases=["changes"], help="CHANGESの一覧をMarkdown形式で表示",
+        sub, "change", aliases=["changes"], help="CHANGESの一覧をMarkdown形式で表示",
     )
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("-n", type=int, default=None, help="表示件数（既定: 全件）")
@@ -913,35 +981,28 @@ def build_parser():
     sort_dir.add_argument("--desc", action="store_true", help="降順で表示")
     p.add_argument("-r", "--reverse", action="store_true", help="表示順だけ反転")
     p.add_argument("--id", dest="show_id", action="store_true", help=id_help)
-    p.set_defaults(func=cmd_list_entries, kind="change", default_ascending=True)
+    p.set_defaults(func=cmd_change, default_ascending=True)
 
     p = _add_parser_with_hidden_aliases(
-        list_sub, "todo", aliases=["todos"],
+        sub, "todo", aliases=["todos"],
         help="TODO一覧（デフォルトは未完了のみ、requestも含む）",
     )
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（finish todoで指定する時など）")
-    p.set_defaults(func=cmd_todos, requests_only=False)
+    p.set_defaults(func=cmd_todos)
 
     p = _add_parser_with_hidden_aliases(
-        list_sub, "request", aliases=["requests"],
-        help="他プロジェクトからの依頼（request）だけに絞ったTODO一覧",
+        sub, "request", aliases=["requests"],
+        help="他プロジェクトからの依頼（request）を表示する（省略時は全プロジェクト横断）",
     )
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    p.add_argument("project", nargs="?", default=None,
+                    help="省略時は全プロジェクトを横断表示（対応漏れチェック用）")
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（finish todoで指定する時など）")
-    p.set_defaults(func=cmd_todos, requests_only=True)
-
-    p = sub.add_parser("status", help="全プロジェクトのSUMMARY状況を横断表示")
-    p.add_argument("--sort", choices=["created_at", "project"], default="created_at",
-                    help="並べ替えに使う列（既定: created_at）")
-    sort_dir = p.add_mutually_exclusive_group()
-    sort_dir.add_argument("--asc", action="store_true", help="昇順で表示")
-    sort_dir.add_argument("--desc", action="store_true", help="降順で表示（既定）")
-    p.set_defaults(func=cmd_status)
+    p.set_defaults(func=cmd_request)
 
     search_p = sub.add_parser("search", help="本文にキーワードを含む記録を横断検索")
     search_sub = search_p.add_subparsers(dest="search_target", required=True,

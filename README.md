@@ -26,15 +26,12 @@ collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
-collog list summary [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
-                                           # SUMMARY履歴を表示（1プロジェクト分。既定: 直近5件・新しい順）
-collog list change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
+collog summary [project] [-n] [--sort created_at|id|project] [--asc|--desc] [-r] [--id]
+                                           # SUMMARYを表示（省略時は全プロジェクト横断、指定時はそのプロジェクトの履歴）
+collog change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
-collog list todo [project] [--all] [--id]  # TODO一覧（既定は未完了のみ、requestも含む）
-collog list request [project] [--all] [--id]  # 上記のうちrequestだけに絞り込み
-
-collog status [--sort created_at|project] [--asc|--desc]
-                                           # 全プロジェクトの最新SUMMARYを横断表示
+collog todo [project] [--all] [--id]      # TODO一覧（既定は未完了のみ、requestも含む）
+collog request [project] [--all] [--id]   # 他プロジェクトからの依頼を表示（省略時は全プロジェクト横断）
 
 collog search summary|change|todo|all <keyword> [project] [--global|-g]
                                            # 本文にkeywordを含む記録を検索（既定はカレントディレクトリのプロジェクトのみ）
@@ -54,22 +51,24 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と照合して推測（サブディレクトリからでも可）
 - 複数該当する場合は最も深いパスを優先
 - 該当なしかつ`project`も省略の場合はエラー（`collog init`を促すメッセージ）
-- 対象外: `status`（`project`引数を持たない）、`add request`の`project`（依頼先）
+- 対象外: `summary`/`request`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`の`project`（依頼先）
 
-### status / list summary・list change の表示
+### summary・change の表示
 
+- `summary [project]`は、`project`省略時は全プロジェクトの最新1件ずつを横断表示、指定時はそのプロジェクトのsummary履歴を表示する（2つのモードで意味を持つオプションが違う）
+- `change [project]`は横断表示を持たず、常にそのプロジェクト（省略時はCWD自動推測）の履歴を表示する
 - いずれもMarkdown形式で出力
-- `status`は端末（TTY）出力時のみ本文をプレビュー表示。`list summary`/`list change`は常に全文
+- 横断表示（`summary`省略時）は端末（TTY）出力時のみ本文をプレビュー表示。履歴表示（`summary <project>`/`change`）は常に全文
 - 出力が端末の行数を超える場合は自動で`$PAGER`（既定`less`）に通す。パイプ・リダイレクト時はそのまま全文出力
-- `list summary`/`list change`は`--sort`/`--asc`/`--desc`/`-r`で並べ替え可能（既定: `list change`は`created_at`昇順、`list summary`は`created_at`降順・直近5件）
-- `status`の並べ替えは`--sort {created_at,project}`のみ
+- 履歴表示は`--sort`/`--asc`/`--desc`/`-r`で並べ替え可能（既定: `change`は`created_at`昇順、`summary <project>`は`created_at`降順・直近5件）。`summary`の横断表示の並べ替えは`--sort {created_at,project}`のみ
 
-### list todo の表示
+### todo の表示
 
 - タスクリスト記法（`- [ ] ...` / `- [x] ...`）で出力
 - 作成日時は非表示
+- `change`と同様、横断表示は持たない（`project`省略時はCWD自動推測）
 
-### #id表示（list summary/change/todo/request共通）
+### #id表示（summary/change/todo/request共通）
 
 - 既定では非表示、`--id`を付けた時だけ表示
 
@@ -86,8 +85,8 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `add request <project> [--from <source_project>]`で他プロジェクトからの依頼をTODOとして記録
 - `project`（依頼先）は明示必須、`--from`（依頼元）は省略するとカレントディレクトリから推測
-- `list todo`はrequestも含めて全件表示（見出しに`[from: <source_project>]`が付く）
-- `list request`でrequestだけに絞り込み
+- `todo`はrequestも含めて全件表示（見出しに`[from: <source_project>]`が付く）
+- `request`でrequestだけに絞り込み。`project`省略時は全プロジェクトの未完了requestをプロジェクトごとに横断表示（他プロジェクトへの依頼の対応漏れチェック用）
 - 完了操作は通常のtodoと同じ`finish todo`
 
 ### update/delete（訂正・削除）
