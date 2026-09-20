@@ -26,7 +26,7 @@ collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
-collog summary [project] [-n] [--date YYYY-MM-DD] [--sort created_at|id|project] [--asc|--desc] [-r] [--id]
+collog summary [project] [-n] [--date YYYY-MM-DD] [--from 日時] [--to 日時] [--sort created_at|id|project] [--asc|--desc] [-r] [--id]
                                            # SUMMARYを表示（省略時は全プロジェクト横断、指定時はそのプロジェクトの履歴）
 collog change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
@@ -61,7 +61,9 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - 横断表示（`summary`省略時）は端末（TTY）出力時のみ本文をプレビュー表示。履歴表示（`summary <project>`/`change`）は常に全文
 - 出力が端末の行数を超える場合は自動で`$PAGER`（既定`less`）に通す。パイプ・リダイレクト時はそのまま全文出力
 - 履歴表示は`--sort`/`--asc`/`--desc`/`-r`で並べ替え可能（既定: `change`は`created_at`昇順、`summary <project>`は`created_at`降順・直近5件）。`summary`の横断表示の並べ替えは`--sort {created_at,project}`のみ
-- `summary`は`--date YYYY-MM-DD`で指定日付の記録のみに絞り込める（作業履歴の日次抽出など外部連携用途）。横断表示では「最新1件」ではなくその日の記録全部（複数プロジェクト分）を表示し、履歴表示では`-n`の既定値を無視して全件表示する（`-n`を明示指定した場合はそちらが優先）
+- `summary`は`--date YYYY-MM-DD`で指定日付の記録のみに絞り込める（作業履歴の日次抽出など外部連携用途）。横断表示では「最新1件」ではなく該当する記録全部（複数プロジェクト分）を表示し、履歴表示では`-n`の既定値を無視して全件表示する（`-n`を明示指定した場合はそちらが優先）
+- `--from`/`--to`で日時範囲による絞り込みもできる（`--from`は以上、`--to`は未満）。日付のみの指定も可（`00:00:00`扱い）。`--date`と併用でき、指定した条件はすべてAND合成される（例: 日付境界と実際の作業感覚がずれる深夜作業を前日扱いにしたい場合は`--from "2026-09-17 06:00" --to "2026-09-18 06:00"`のように指定する）
+- `--date`/`--from`/`--to`はいずれも区切り文字に`-`と`/`の両方（`2026-09-18`/`2026/09/18`）、ゼロパディングの有無どちらも受け付ける
 
 ### todo の表示
 

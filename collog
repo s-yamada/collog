@@ -95,20 +95,72 @@ def validate_date(date_str):
     created_atとの比較は単純な文字列完全一致（substr(created_at,1,10) = ?）のため、
     '2026-9-18'のようなゼロパディング無しの入力をそのまま返すと、DB側の
     '2026-09-18'と一致せず、エラーも出ないまま黙って「該当なし」になってしまう。
-    resolve_timestamp()と同様、strftimeで正規化してから返す。Noneならそのまま返す。
+    resolve_timestamp()と同様、strftimeで正規化してから返す。区切り文字は'-'と'/'を
+    許容する（ゼロパディング無しはstrptimeが元々受け付ける）。Noneならそのまま返す。
     """
     if date_str is None:
         return None
-    try:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        print(
-            f"エラー: --date の日付形式が不正です: '{date_str}' "
-            f"（'YYYY-MM-DD'で指定してください）",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return dt.strftime("%Y-%m-%d")
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    print(
+        f"エラー: --date の日付形式が不正です: '{date_str}' "
+        f"（'YYYY-MM-DD'または'YYYY/MM/DD'で指定してください）",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def validate_boundary_timestamp(ts, label):
+    """--from/--toの日時境界を検証し、'YYYY-MM-DD HH:MM:SS'に正規化して返す。
+
+    --atと違い、日付のみの指定も許容する（例: --from 2026-09-17 は
+    '2026-09-17 00:00:00'として扱われる）。深夜作業を前日扱いにする、といった
+    柔軟な範囲指定を想定しているため。区切り文字は'-'と'/'を許容する
+    （ゼロパディング無しはstrptimeが元々受け付ける）。Noneならそのまま返す。
+    """
+    if ts is None:
+        return None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
+    ):
+        try:
+            dt = datetime.strptime(ts, fmt)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+    print(
+        f"エラー: {label} の日時形式が不正です: '{ts}' "
+        f"（'YYYY-MM-DD'/'YYYY/MM/DD'、または末尾に' HH:MM'/' HH:MM:SS'を"
+        f"付けた形式で指定してください）",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _build_date_filter(date=None, from_ts=None, to_ts=None):
+    """created_atに対する絞り込み条件をSQL断片とパラメータのリストとして返す。
+
+    date/from_ts/to_tsは互いに独立した条件として扱われ、複数指定されればAND合成
+    される（例: --date と --from/--to を同時指定すれば、その日付かつその時刻範囲、
+    という絞り込みになる）。fromは以上、toは未満（半開区間）。
+    """
+    conditions = []
+    params = []
+    if date:
+        conditions.append("substr(created_at, 1, 10) = ?")
+        params.append(date)
+    if from_ts:
+        conditions.append("created_at >= ?")
+        params.append(from_ts)
+    if to_ts:
+        conditions.append("created_at < ?")
+        params.append(to_ts)
+    return conditions, params
 
 
 def read_body():
@@ -409,18 +461,21 @@ def _print_or_page(output):
     sys.stdout.write(output)
 
 
-def _fetch_entries(conn, project, kind, sort_col, ascending, limit, date=None):
+def _fetch_entries(conn, project, kind, sort_col, ascending, limit,
+                    date=None, from_ts=None, to_ts=None):
     """entriesから1プロジェクト分をkind絞り込み・並べ替え・（任意で）件数制限して取得する。
 
     sort_colはargparseのchoicesで安全な値に限定済みの前提で、そのままSQLへ埋め込む。
-    dateを指定すると、created_atの日付部分（先頭10文字）が一致する行のみに絞る。
+    date/from_ts/to_tsを指定すると、created_atに対する絞り込みが追加される
+    （複数指定時はAND合成。詳細は_build_date_filter参照）。
     """
     direction = "ASC" if ascending else "DESC"
     query = "SELECT id, created_at, body FROM entries WHERE project = ? AND kind = ?"
     params = [project, kind]
-    if date:
-        query += " AND substr(created_at, 1, 10) = ?"
-        params.append(date)
+    conditions, extra_params = _build_date_filter(date, from_ts, to_ts)
+    for condition in conditions:
+        query += f" AND {condition}"
+    params.extend(extra_params)
     query += f" ORDER BY {sort_col} {direction}"
     if limit is not None:
         query += " LIMIT ?"
@@ -467,25 +522,28 @@ def _preview_paragraph(body, limit=400):
     return body[:cut].strip(), True
 
 
-def _cmd_summary_cross(args, conn):
+def _cmd_summary_cross(args, conn, date=None, from_ts=None, to_ts=None):
     """summaryの横断表示（project省略時）: 全プロジェクトの最新SUMMARYを1件ずつ。
 
-    --date指定時は「最新1件」ロジックをやめ、指定日付（created_atの先頭10文字が
-    一致）のSUMMARYを持つプロジェクトについて、その日の記録を全件表示する
-    （「その日にやったこと」を横断的に振り返る用途。外部連携での日次抽出を想定）。
+    date/--from/--toのいずれか指定時は「最新1件」ロジックをやめ、絞り込み条件
+    （複数指定時はAND合成）に該当するSUMMARYを持つプロジェクトについて、その記録を
+    全件表示する（「その期間にやったこと」を横断的に振り返る用途。外部連携での
+    日次抽出等を想定）。
     """
     direction = "ASC" if args.asc else "DESC"
-    if args.date:
+    if date or from_ts or to_ts:
+        conditions, params = _build_date_filter(date, from_ts, to_ts)
+        where_clause = " AND ".join(["kind = 'summary'"] + conditions)
         # sortがprojectの場合のみ副次キーとしてcreated_atを足す（同一プロジェクト内の
         # 複数件を時系列順に並べるため）。created_atの場合は二重指定を避ける。
         secondary = ", created_at" if args.sort == "project" else ""
         rows = conn.execute(
             f"""
             SELECT project, created_at, body FROM entries
-            WHERE kind = 'summary' AND substr(created_at, 1, 10) = ?
+            WHERE {where_clause}
             ORDER BY {args.sort} {direction}{secondary}
             """,
-            (args.date,),
+            params,
         ).fetchall()
     else:
         rows = conn.execute(
@@ -525,14 +583,15 @@ def _cmd_summary_cross(args, conn):
     _print_or_page("\n".join(parts).rstrip("\n") + "\n")
 
 
-def _cmd_entry_history(args, conn, kind, date=None):
+def _cmd_entry_history(args, conn, kind, date=None, from_ts=None, to_ts=None):
     """summary/change共通の1プロジェクト分の履歴表示。
 
     既定の並べ替え方向はkindごとに異なる（changeは元々「古い順」、summaryは
     「新しい順」）ため、--asc/--desc未指定時はargs.default_ascendingに従う。
-    dateを指定すると、その日付のentryのみに絞り込む。この時-n（未明示なら）は
-    無視して全件表示する（日付で絞った上に件数でも切られると、その日の記録が
-    漏れてしまうため）。-nが明示的に指定されていればそちらを優先する。
+    date/from_ts/to_tsのいずれかを指定すると、それらに絞り込む（複数指定時は
+    AND合成）。この時-n（未明示なら）は無視して全件表示する（絞り込んだ上に
+    件数でも切られると記録が漏れてしまうため）。-nが明示的に指定されていれば
+    そちらを優先する。
     """
     project = _resolve_project(args.project, conn)
     if args.asc:
@@ -541,15 +600,17 @@ def _cmd_entry_history(args, conn, kind, date=None):
         ascending = False
     else:
         ascending = args.default_ascending
+    narrowed = date or from_ts or to_ts
     if args.n is not None:
         limit = args.n
-    elif date:
+    elif narrowed:
         limit = None
     else:
         limit = args.default_n
-    rows = _fetch_entries(conn, project, kind, args.sort, ascending, limit, date=date)
+    rows = _fetch_entries(conn, project, kind, args.sort, ascending, limit,
+                           date=date, from_ts=from_ts, to_ts=to_ts)
     if not rows:
-        label = f"{project}" if not date else f"{project} の{date}"
+        label = f"{project}" if not narrowed else f"{project}（絞り込み条件に該当なし）"
         print(f"(記録なし: {label})", file=sys.stderr)
         return
     if args.reverse:
@@ -562,6 +623,8 @@ def _cmd_entry_history(args, conn, kind, date=None):
 def cmd_summary(args):
     conn = get_conn()
     date = validate_date(args.date)
+    from_ts = validate_boundary_timestamp(args.date_from, "--from")
+    to_ts = validate_boundary_timestamp(args.date_to, "--to")
     if args.project is None:
         if args.sort == "id":
             print(
@@ -570,8 +633,7 @@ def cmd_summary(args):
                 file=sys.stderr,
             )
             sys.exit(1)
-        args.date = date
-        _cmd_summary_cross(args, conn)
+        _cmd_summary_cross(args, conn, date=date, from_ts=from_ts, to_ts=to_ts)
     else:
         if args.sort == "project":
             print(
@@ -579,7 +641,7 @@ def cmd_summary(args):
                 file=sys.stderr,
             )
             sys.exit(1)
-        _cmd_entry_history(args, conn, "summary", date=date)
+        _cmd_entry_history(args, conn, "summary", date=date, from_ts=from_ts, to_ts=to_ts)
 
 
 def cmd_change(args):
@@ -1015,10 +1077,19 @@ def build_parser():
     p.add_argument("project", nargs="?", default=None,
                     help="省略時は全プロジェクトを横断表示（各プロジェクトの最新1件）")
     p.add_argument("-n", type=int, default=None,
-                    help="表示件数（プロジェクト指定時のみ有効。既定5、--date指定時は全件）")
+                    help="表示件数（プロジェクト指定時のみ有効。"
+                         "既定5、--date/--from/--to指定時は全件）")
     p.add_argument("--date", default=None, metavar="YYYY-MM-DD",
                     help="指定日付の記録のみに絞る（作業履歴の日次抽出用）。"
-                         "省略時は-n件数のみ有効")
+                         "--from/--toと併用でき、AND合成される")
+    p.add_argument("--from", dest="date_from", default=None,
+                    metavar="YYYY-MM-DD[ HH:MM[:SS]]",
+                    help="この日時以降（以上）の記録に絞る。日付のみも可"
+                         "（00:00:00扱い）。--date/--toと併用でき、AND合成される")
+    p.add_argument("--to", dest="date_to", default=None,
+                    metavar="YYYY-MM-DD[ HH:MM[:SS]]",
+                    help="この日時より前（未満）の記録に絞る。日付のみも可"
+                         "（00:00:00扱い）。--date/--fromと併用でき、AND合成される")
     p.add_argument("--sort", choices=["created_at", "id", "project"], default="created_at",
                     help="並べ替えに使う列（プロジェクト指定時: created_at/id、"
                          "省略時: created_at/project。既定: created_at）")
