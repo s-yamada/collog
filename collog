@@ -90,11 +90,17 @@ def resolve_timestamp(at):
 
 
 def validate_date(date_str):
-    """--dateの日付形式を厳格に検証する（'YYYY-MM-DD'のみ）。Noneならそのまま返す。"""
+    """--dateの日付形式を検証し、'YYYY-MM-DD'（ゼロパディングあり）に正規化して返す。
+
+    created_atとの比較は単純な文字列完全一致（substr(created_at,1,10) = ?）のため、
+    '2026-9-18'のようなゼロパディング無しの入力をそのまま返すと、DB側の
+    '2026-09-18'と一致せず、エラーも出ないまま黙って「該当なし」になってしまう。
+    resolve_timestamp()と同様、strftimeで正規化してから返す。Noneならそのまま返す。
+    """
     if date_str is None:
         return None
     try:
-        datetime.strptime(date_str, "%Y-%m-%d")
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         print(
             f"エラー: --date の日付形式が不正です: '{date_str}' "
@@ -102,7 +108,7 @@ def validate_date(date_str):
             file=sys.stderr,
         )
         sys.exit(1)
-    return date_str
+    return dt.strftime("%Y-%m-%d")
 
 
 def read_body():
