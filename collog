@@ -1047,12 +1047,36 @@ def build_parser():
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_entry, kind="change")
 
-    p = add_sub.add_parser("todo", help="標準入力の内容をTODOとして追加")
+    todo_desc = (
+        "将来実装する機能・変更の要件を追加する（やることリストではない）。\n"
+        "何を実現するか（What）を書き、どう作業するか（How）は書かない。\n"
+        "\n"
+        "  OK: 画面幅を超えて整列できない場合、その旨をユーザーに通知すること\n"
+        "  NG: 複数モニターで実機確認する（確認・検証）\n"
+        "  NG: 本番DBでmigrationを実行（運用手順）\n"
+        "  NG: 〇〇をmainへマージ（ユーザーの動作確認後）（確認・判断待ち）\n"
+        "\n"
+        "確認・検証の後に残った項目や「〜待ち」は、HANDOVER.mdに書く。"
+    )
+    p = add_sub.add_parser(
+        "todo", help="将来実装する機能・変更の要件を追加（作業手順・確認待ちは書かない）",
+        description=todo_desc, formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("project", nargs="?", default=None, help=project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_todo, from_project=None, is_request=False)
 
-    p = add_sub.add_parser("request", help="他プロジェクトからの依頼として標準入力の内容をTODOに追加")
+    request_desc = (
+        "他プロジェクトへの機能・変更の依頼（相手のtodoになるもの）を追加する。\n"
+        "連絡・お知らせは書かない。\n"
+        "\n"
+        "  OK: qiqlibに〇〇ヘルパーを追加してほしい\n"
+        "  NG: 〇〇を更新しました／今後は△△を使うこと（連絡・お知らせ）"
+    )
+    p = add_sub.add_parser(
+        "request", help="他プロジェクトへの機能・変更の依頼を追加（連絡・お知らせは書かない）",
+        description=request_desc, formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p.add_argument("project", help="依頼先（TODOリストに載る）のプロジェクト")
     p.add_argument("--from", dest="from_project", default=None, metavar="PROJECT",
                     help="依頼元のプロジェクト（省略時はカレントディレクトリから推測）")
