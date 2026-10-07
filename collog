@@ -51,6 +51,10 @@ def get_conn():
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(todos)")}
     if "from_project" not in existing_cols:
         conn.execute("ALTER TABLE todos ADD COLUMN from_project TEXT")
+    # 既存DB向けマイグレーション: declined_at/decline_reason列（declineコマンド対応）。
+    if "declined_at" not in existing_cols:
+        conn.execute("ALTER TABLE todos ADD COLUMN declined_at TEXT")
+        conn.execute("ALTER TABLE todos ADD COLUMN decline_reason TEXT")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS projects (
             name TEXT PRIMARY KEY,
@@ -395,28 +399,50 @@ def cmd_finish_todo(args):
     conn = get_conn()
     project = _resolve_project(args.project, conn)
     cur = conn.execute(
-        "UPDATE todos SET completed_at = ? WHERE id = ? AND project = ? AND completed_at IS NULL",
+        "UPDATE todos SET completed_at = ? WHERE id = ? AND project = ? "
+        "AND completed_at IS NULL AND declined_at IS NULL",
         (resolve_timestamp(args.at), args.id, project),
     )
     conn.commit()
     if cur.rowcount == 0:
-        print("エラー: 該当する未完了TODOが見つかりません", file=sys.stderr)
+        print("エラー: 該当する未完了・未見送りのTODOが見つかりません", file=sys.stderr)
         sys.exit(1)
     print(f"OK: TODO #{args.id} ({project}) を完了にしました")
 
 
-def _print_todo_list(rows, show_all, show_id):
-    """(id, created_at, 完了/既読日時, from_project, body)の行リストをタスクリスト形式で表示する。
+def cmd_decline_todo(args):
+    reason = read_body()
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    cur = conn.execute(
+        "UPDATE todos SET declined_at = ?, decline_reason = ? WHERE id = ? AND project = ? "
+        "AND completed_at IS NULL AND declined_at IS NULL",
+        (resolve_timestamp(args.at), reason, args.id, project),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        print("エラー: 該当する未完了・未見送りのTODOが見つかりません", file=sys.stderr)
+        sys.exit(1)
+    print(f"OK: TODO #{args.id} ({project}) を見送りにしました")
 
-    todo/request/messageで共通（messageの「完了/既読日時」はread_atを渡す）。
+
+def _print_todo_list(rows, show_all, show_id):
+    """(id, created_at, 完了/既読日時, from_project, body, declined_at, decline_reason)の
+    行リストをタスクリスト形式で表示する。
+
+    todo/request/messageで共通（messageはcompleted_at位置にread_atを渡し、
+    declined_at/decline_reasonは常にNone。messageに見送りの概念は無いため）。
     表示した件数を返す（0件かどうかの判定を呼び出し元に委ねるため）。
     """
     shown = 0
-    for todo_id, created_at, completed_at, from_project, body in rows:
-        if not show_all and completed_at is not None:
+    for todo_id, created_at, completed_at, from_project, body, declined_at, decline_reason in rows:
+        closed = completed_at is not None or declined_at is not None
+        if not show_all and closed:
             continue
-        mark = "x" if completed_at else " "
+        mark = "x" if closed else " "
         tag = f" [from: {from_project}]" if from_project else ""
+        if declined_at:
+            tag += f" (見送り: {decline_reason})"
         # GFMのタスクリスト記法（- [ ]/- [x]）。素の「[ ]」はMarkdown上ただの地の文で、
         # 空行の無い連続行が1段落にmergeされてしまう（mdcat等で確認済み）ため、
         # 各項目が独立したリスト項目として扱われるよう「- 」を必ず付ける。
@@ -436,8 +462,8 @@ def cmd_todos(args):
     conn = get_conn()
     project = _resolve_project(args.project, conn)
     rows = conn.execute(
-        "SELECT id, created_at, completed_at, from_project, body FROM todos "
-        "WHERE project = ? ORDER BY created_at",
+        "SELECT id, created_at, completed_at, from_project, body, declined_at, decline_reason "
+        "FROM todos WHERE project = ? ORDER BY created_at",
         (project,),
     ).fetchall()
     if _print_todo_list(rows, args.all, args.show_id) == 0:
@@ -449,17 +475,19 @@ def cmd_request(args):
     if args.project is None:
         # 横断表示: 全プロジェクトのrequest（from_projectがあるtodo）をプロジェクトごとに
         # まとめて表示する。対応漏れ（他プロジェクトへの依頼が放置されていないか）の
-        # チェック用途を想定しているため、既定は未完了のみ（--allで完了分も含む）。
+        # チェック用途を想定しているため、既定は未完了・未見送りのみ（--allで含める）。
         rows = conn.execute(
-            "SELECT project, id, created_at, completed_at, from_project, body FROM todos "
+            "SELECT project, id, created_at, completed_at, from_project, body, "
+            "declined_at, decline_reason FROM todos "
             "WHERE from_project IS NOT NULL ORDER BY project, created_at"
         ).fetchall()
         by_project = {}
-        for project, todo_id, created_at, completed_at, from_project, body in rows:
-            if not args.all and completed_at is not None:
+        for row in rows:
+            project, todo_id, created_at, completed_at, from_project, body, declined_at, decline_reason = row
+            if not args.all and (completed_at is not None or declined_at is not None):
                 continue
             by_project.setdefault(project, []).append(
-                (todo_id, created_at, completed_at, from_project, body)
+                (todo_id, created_at, completed_at, from_project, body, declined_at, decline_reason)
             )
         if not by_project:
             print("（該当するREQUESTはありません）")
@@ -472,8 +500,8 @@ def cmd_request(args):
     else:
         project = _resolve_project(args.project, conn)
         rows = conn.execute(
-            "SELECT id, created_at, completed_at, from_project, body FROM todos "
-            "WHERE project = ? AND from_project IS NOT NULL ORDER BY created_at",
+            "SELECT id, created_at, completed_at, from_project, body, declined_at, decline_reason "
+            "FROM todos WHERE project = ? AND from_project IS NOT NULL ORDER BY created_at",
             (project,),
         ).fetchall()
         if _print_todo_list(rows, args.all, args.show_id) == 0:
@@ -493,8 +521,10 @@ def cmd_message(args):
         for project, msg_id, created_at, read_at, from_project, body in rows:
             if not args.all and read_at is not None:
                 continue
+            # messageにdeclined_at/decline_reasonは無いため、_print_todo_listの
+            # 共通シグネチャに合わせてNoneを補う。
             by_project.setdefault(project, []).append(
-                (msg_id, created_at, read_at, from_project, body)
+                (msg_id, created_at, read_at, from_project, body, None, None)
             )
         if not by_project:
             print("（該当するMESSAGEはありません）")
@@ -511,6 +541,7 @@ def cmd_message(args):
             "WHERE project = ? ORDER BY created_at",
             (project,),
         ).fetchall()
+        rows = [(i, c, r, f, b, None, None) for i, c, r, f, b in rows]
         if _print_todo_list(rows, args.all, args.show_id) == 0:
             print(f"（{project} に該当するMESSAGEはありません）")
 
@@ -860,8 +891,13 @@ def cmd_export(args):
             (args.project,),
         ).fetchall()
         todo_rows = conn.execute(
-            "SELECT id, project, created_at, completed_at, from_project, body "
-            "FROM todos WHERE project = ? ORDER BY id",
+            "SELECT id, project, created_at, completed_at, from_project, body, "
+            "declined_at, decline_reason FROM todos WHERE project = ? ORDER BY id",
+            (args.project,),
+        ).fetchall()
+        message_rows = conn.execute(
+            "SELECT id, project, from_project, created_at, read_at, body "
+            "FROM messages WHERE project = ? ORDER BY id",
             (args.project,),
         ).fetchall()
     else:
@@ -872,7 +908,12 @@ def cmd_export(args):
             "SELECT id, project, kind, created_at, body FROM entries ORDER BY id"
         ).fetchall()
         todo_rows = conn.execute(
-            "SELECT id, project, created_at, completed_at, from_project, body FROM todos ORDER BY id"
+            "SELECT id, project, created_at, completed_at, from_project, body, "
+            "declined_at, decline_reason FROM todos ORDER BY id"
+        ).fetchall()
+        message_rows = conn.execute(
+            "SELECT id, project, from_project, created_at, read_at, body "
+            "FROM messages ORDER BY id"
         ).fetchall()
 
     data = {
@@ -890,8 +931,16 @@ def cmd_export(args):
             {
                 "id": i, "project": pr, "created_at": c,
                 "completed_at": ca, "from_project": fp, "body": b,
+                "declined_at": da, "decline_reason": dr,
             }
-            for i, pr, c, ca, fp, b in todo_rows
+            for i, pr, c, ca, fp, b, da, dr in todo_rows
+        ],
+        "messages": [
+            {
+                "id": i, "project": pr, "from_project": fp,
+                "created_at": c, "read_at": ra, "body": b,
+            }
+            for i, pr, fp, c, ra, b in message_rows
         ],
     }
     # ensure_ascii=False: 日本語本文が\uXXXXにエスケープされて読みにくくなるのを防ぐ
@@ -914,8 +963,9 @@ def cmd_import(args):
     projects_in = data.get("projects", [])
     entries_in = data.get("entries", [])
     todos_in = data.get("todos", [])
+    messages_in = data.get("messages", [])
 
-    # INSERTを始める前に、entries/todosが参照するprojectが「既に登録済み」か
+    # INSERTを始める前に、entries/todos/messagesが参照するprojectが「既に登録済み」か
     # 「このimportデータのprojectsに含まれている」かを検証する（不整合な取り込みを防ぐ）。
     known_projects = {row[0] for row in conn.execute("SELECT name FROM projects")}
     known_projects |= {p["name"] for p in projects_in}
@@ -933,6 +983,16 @@ def cmd_import(args):
             if name and name not in known_projects:
                 print(
                     f"エラー: todosが参照するプロジェクト '{name}'（{key}）が未登録で、"
+                    f"importデータのprojectsにも含まれていません。",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+    for m in messages_in:
+        for key in ("project", "from_project"):
+            name = m.get(key)
+            if name and name not in known_projects:
+                print(
+                    f"エラー: messagesが参照するプロジェクト '{name}'（{key}）が未登録で、"
                     f"importデータのprojectsにも含まれていません。",
                     file=sys.stderr,
                 )
@@ -979,17 +1039,37 @@ def cmd_import(args):
                 if t.get("id") is not None:
                     conn.execute(
                         f"INSERT {insert_or}INTO todos "
-                        "(id, project, created_at, completed_at, from_project, body) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        "(id, project, created_at, completed_at, from_project, body, "
+                        "declined_at, decline_reason) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (t["id"], t["project"], t["created_at"], t.get("completed_at"),
-                         t.get("from_project"), t["body"]),
+                         t.get("from_project"), t["body"], t.get("declined_at"),
+                         t.get("decline_reason")),
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO todos (project, created_at, completed_at, from_project, body) "
-                        "VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO todos (project, created_at, completed_at, from_project, "
+                        "body, declined_at, decline_reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (t["project"], t["created_at"], t.get("completed_at"),
-                         t.get("from_project"), t["body"]),
+                         t.get("from_project"), t["body"], t.get("declined_at"),
+                         t.get("decline_reason")),
+                    )
+
+            for m in messages_in:
+                if m.get("id") is not None:
+                    conn.execute(
+                        f"INSERT {insert_or}INTO messages "
+                        "(id, project, from_project, created_at, read_at, body) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (m["id"], m["project"], m.get("from_project"), m["created_at"],
+                         m.get("read_at"), m["body"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO messages (project, from_project, created_at, read_at, body) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (m["project"], m.get("from_project"), m["created_at"],
+                         m.get("read_at"), m["body"]),
                     )
     except sqlite3.IntegrityError as ex:
         print(f"エラー: ID/name重複のため中断しました（--safety指定時はREPLACEされません）: {ex}",
@@ -998,7 +1078,7 @@ def cmd_import(args):
 
     print(
         f"OK: インポート完了 (projects: {projects_created}件新規登録, "
-        f"entries: {len(entries_in)}件, todos: {len(todos_in)}件)"
+        f"entries: {len(entries_in)}件, todos: {len(todos_in)}件, messages: {len(messages_in)}件)"
     )
 
 
@@ -1044,14 +1124,16 @@ def cmd_search(args):
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
 
     if "todo" in kinds:
-        query = "SELECT id, created_at, completed_at, from_project, project, body FROM todos"
+        query = ("SELECT id, created_at, completed_at, from_project, project, body, "
+                  "declined_at FROM todos")
         params = []
         if project:
             query += " WHERE project = ?"
             params.append(project)
-        for todo_id, created_at, completed_at, from_project, project_name, body in conn.execute(query, params).fetchall():
+        for todo_id, created_at, completed_at, from_project, project_name, body, declined_at \
+                in conn.execute(query, params).fetchall():
             if keyword_lower in body.lower():
-                mark = "x" if completed_at else " "
+                mark = "x" if (completed_at or declined_at) else " "
                 tag = f" from: {from_project}" if from_project else ""
                 header = f"## [{created_at}] {project_name} (todo #{todo_id} [{mark}]{tag})"
                 matches.append((created_at, header, _match_snippet(body, args.keyword)))
@@ -1171,6 +1253,17 @@ def build_parser():
     p.add_argument("id", type=int)
     p.add_argument("--at", default=None, help="完了日時を指定して遡って記録する（同上の形式）")
     p.set_defaults(func=cmd_finish_todo)
+
+    decline_p = sub.add_parser(
+        "decline", help="TODOを見送りにする（完了とは別の終了状態。理由は標準入力から）")
+    decline_sub = decline_p.add_subparsers(dest="decline_target", required=True)
+
+    p = decline_sub.add_parser(
+        "todo", help="指定IDのTODOを見送りにする（requestにも使える）")
+    p.add_argument("project", nargs="?", default=None, help=project_help)
+    p.add_argument("id", type=int)
+    p.add_argument("--at", default=None, help="見送り日時を指定して遡って記録する（同上の形式）")
+    p.set_defaults(func=cmd_decline_todo)
 
     id_help = "#id を表示する（show/finish todoで指定する時など）"
 

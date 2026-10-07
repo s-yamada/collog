@@ -27,6 +27,7 @@ collog add request <project> [--from <source_project>] [--at 日時]
 collog add message <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトへの連絡を追加（お知らせ・不具合の知らせなど）
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
+collog decline todo [project] <id> [--at 日時]  # 指定TODOを見送りにする（理由は標準入力から）
 
 collog summary [project] [-n] [--date YYYY-MM-DD] [--from 日時] [--to 日時] [--sort created_at|id|project] [--asc|--desc] [-r] [--id]
                                            # SUMMARYを表示（省略時は全プロジェクト横断、指定時はそのプロジェクトの履歴）
@@ -73,6 +74,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - タスクリスト記法（`- [ ] ...` / `- [x] ...`）で出力
 - 作成日時は非表示
 - `change`と同様、横断表示は持たない（`project`省略時はCWD自動推測）
+- `decline todo [project] <id>`でTODOを「見送り」にできる（完了とは別の終了状態。理由は標準入力から受け取り必須）。デフォルトの一覧からは外れ、`--all`で見出しに`(見送り: 理由)`付きで表示。`finish`/`decline`は互いに排他（どちらか片方のみ、やり直し不可）。`request`にも使える
 
 ### #id表示（summary/change/todo/request/message共通）
 
@@ -113,7 +115,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `export [project]`（省略時は全プロジェクト）でJSON形式に書き出し
 - `import`で標準入力から取り込み（デフォルトは`INSERT OR REPLACE`、`--safety`でエラー中断に切り替え）
-- `entries`/`todos`は元の`id`があれば上書き、無ければ自動採番で新規追加
+- `entries`/`todos`/`messages`は元の`id`があれば上書き、無ければ自動採番で新規追加
 - `projects`も`name`が既存なら上書き（`path`が異なる環境へ移行した場合はimport後に`init`で設定し直す）
 - `--safety`指定時は`id`/`name`の重複でエラー中断し、import全体をロールバック
 - 未登録のプロジェクトはexport内の`path`で自動`init`
