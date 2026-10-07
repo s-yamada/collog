@@ -1,7 +1,7 @@
 # collog: Collaboration Log
 
 プロジェクトの進行管理ツール。
-プロジェクトごとに TODO/CHANGES/SUMMARY を一元管理。
+プロジェクトごとに TODO/CHANGES/SUMMARY/MESSAGE を一元管理。
 AIとのバイブコーディングでの使用を想定しています。
 
 ## インストール
@@ -24,6 +24,8 @@ collog add change [project] [--at 日時]    # 標準入力の内容をCHANGES�
 collog add todo [project] [--at 日時]      # 標準入力の内容をTODOとして追加
 collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
+collog add message <project> [--from <source_project>] [--at 日時]
+                                           # 他プロジェクトへの連絡を追加（お知らせ・不具合の知らせなど）
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 
 collog summary [project] [-n] [--date YYYY-MM-DD] [--from 日時] [--to 日時] [--sort created_at|id|project] [--asc|--desc] [-r] [--id]
@@ -32,10 +34,12 @@ collog change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
 collog todo [project] [--all] [--id]      # TODO一覧（既定は未完了のみ、requestも含む）
 collog request [project] [--all] [--id]   # 他プロジェクトからの依頼を表示（省略時は全プロジェクト横断）
+collog message [project] [--all] [--id]   # 他プロジェクトからの連絡を表示（省略時は全プロジェクト横断）
 
 collog search summary|change|todo|all <keyword> [project] [--global|-g]
                                            # 本文にkeywordを含む記録を検索（既定はカレントディレクトリのプロジェクトのみ）
-collog show summary|change [project] <id> # SUMMARY/CHANGESを1件だけ表示
+collog show summary|change|message [project] <id>
+                                           # SUMMARY/CHANGES/MESSAGEを1件だけ表示（messageは未読なら既読にする）
 
 collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
 collog delete summary|change|todo [project] <id>              # 削除
@@ -50,7 +54,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と完全一致する場合のみ推測する（配下のサブディレクトリは対象外）
 - 該当なしかつ`project`も省略の場合はエラー（明示的な指定を促すメッセージ。`collog init`は提案しない）
-- 対象外: `summary`/`request`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`の`project`（依頼先）
+- 対象外: `summary`/`request`/`message`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`/`add message`の`project`（宛先）
 
 ### summary・change の表示
 
@@ -70,7 +74,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - 作成日時は非表示
 - `change`と同様、横断表示は持たない（`project`省略時はCWD自動推測）
 
-### #id表示（summary/change/todo/request共通）
+### #id表示（summary/change/todo/request/message共通）
 
 - 既定では非表示、`--id`を付けた時だけ表示
 
@@ -90,6 +94,13 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `todo`はrequestも含めて全件表示（見出しに`[from: <source_project>]`が付く）
 - `request`でrequestだけに絞り込み。`project`省略時は全プロジェクトの未完了requestをプロジェクトごとに横断表示（他プロジェクトへの依頼の対応漏れチェック用）
 - 完了操作は通常のtodoと同じ`finish todo`
+
+### message（他プロジェクトへの連絡）
+
+- `add message <project> [--from <source_project>]`で他プロジェクトへの連絡（お知らせ・不具合の知らせなど）を記録
+- `request`（依頼・実装を求める）とは別の種類。`project`（宛先）は明示必須、`--from`（送信元）は省略するとカレントディレクトリから推測
+- `message`で表示。`project`省略時は全プロジェクトの未読messageをプロジェクトごとに横断表示（`--all`で既読分も含む）
+- 既読にする操作は`show message <project> <id>`（1件を表示すると同時に既読になる。専用の既読コマンドは無い）
 
 ### update/delete（訂正・削除）
 

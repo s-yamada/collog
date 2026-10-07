@@ -59,6 +59,16 @@ def get_conn():
             updated_at TEXT NOT NULL
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            from_project TEXT,
+            created_at TEXT NOT NULL,
+            read_at TEXT,
+            body TEXT NOT NULL
+        )"""
+    )
     return conn
 
 
@@ -324,14 +334,14 @@ def cmd_add_entry(args):
     print(f"OK: [{args.kind}] {project} を記録しました")
 
 
-def cmd_add_todo(args):
-    body = read_body()
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    require_registered_project(conn, project)
+def _resolve_sender_project(conn, dest_project, from_project_arg):
+    """他プロジェクトへの依頼・連絡の送信元(from_project)を解決する。
 
-    from_project = args.from_project
-    if args.is_request and from_project is None:
+    明示指定が無ければCWD自動推測を試み、それも失敗すればエラー終了する。
+    宛先(dest_project)と送信元が同じ場合もエラーにする。request/messageで共通。
+    """
+    from_project = from_project_arg
+    if from_project is None:
         from_project = _project_from_cwd(conn)
         if from_project is None:
             print(
@@ -340,11 +350,22 @@ def cmd_add_todo(args):
                 file=sys.stderr,
             )
             sys.exit(1)
-    if from_project:
-        require_registered_project(conn, from_project)
-        if from_project == project:
-            print("エラー: 依頼先(project)と依頼元(--from)が同じプロジェクトです", file=sys.stderr)
-            sys.exit(1)
+    require_registered_project(conn, from_project)
+    if from_project == dest_project:
+        print("エラー: 宛先(project)と送信元(--from)が同じプロジェクトです", file=sys.stderr)
+        sys.exit(1)
+    return from_project
+
+
+def cmd_add_todo(args):
+    body = read_body()
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    require_registered_project(conn, project)
+
+    from_project = None
+    if args.is_request:
+        from_project = _resolve_sender_project(conn, project, args.from_project)
 
     cur = conn.execute(
         "INSERT INTO todos (project, created_at, from_project, body) VALUES (?, ?, ?, ?)",
@@ -353,6 +374,21 @@ def cmd_add_todo(args):
     conn.commit()
     suffix = f"（from: {from_project}）" if from_project else ""
     print(f"OK: TODO #{cur.lastrowid} を追加しました ({project}){suffix}")
+
+
+def cmd_add_message(args):
+    body = read_body()
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    require_registered_project(conn, project)
+    from_project = _resolve_sender_project(conn, project, args.from_project)
+
+    cur = conn.execute(
+        "INSERT INTO messages (project, from_project, created_at, body) VALUES (?, ?, ?, ?)",
+        (project, from_project, resolve_timestamp(args.at), body),
+    )
+    conn.commit()
+    print(f"OK: MESSAGE #{cur.lastrowid} を追加しました ({project})（from: {from_project}）")
 
 
 def cmd_finish_todo(args):
@@ -370,8 +406,9 @@ def cmd_finish_todo(args):
 
 
 def _print_todo_list(rows, show_all, show_id):
-    """(id, created_at, completed_at, from_project, body)の行リストをタスクリスト形式で表示する。
+    """(id, created_at, 完了/既読日時, from_project, body)の行リストをタスクリスト形式で表示する。
 
+    todo/request/messageで共通（messageの「完了/既読日時」はread_atを渡す）。
     表示した件数を返す（0件かどうかの判定を呼び出し元に委ねるため）。
     """
     shown = 0
@@ -441,6 +478,41 @@ def cmd_request(args):
         ).fetchall()
         if _print_todo_list(rows, args.all, args.show_id) == 0:
             print(f"（{project} に該当するREQUESTはありません）")
+
+
+def cmd_message(args):
+    conn = get_conn()
+    if args.project is None:
+        # 横断表示: 全プロジェクトのmessageをプロジェクトごとにまとめて表示する。
+        # 既定は未読のみ（--allで既読分も含む）。requestと同じ構造。
+        rows = conn.execute(
+            "SELECT project, id, created_at, read_at, from_project, body FROM messages "
+            "ORDER BY project, created_at"
+        ).fetchall()
+        by_project = {}
+        for project, msg_id, created_at, read_at, from_project, body in rows:
+            if not args.all and read_at is not None:
+                continue
+            by_project.setdefault(project, []).append(
+                (msg_id, created_at, read_at, from_project, body)
+            )
+        if not by_project:
+            print("（該当するMESSAGEはありません）")
+            return
+        for i, project in enumerate(sorted(by_project)):
+            if i > 0:
+                print()
+            print(f"### {project}")
+            _print_todo_list(by_project[project], True, args.show_id)
+    else:
+        project = _resolve_project(args.project, conn)
+        rows = conn.execute(
+            "SELECT id, created_at, read_at, from_project, body FROM messages "
+            "WHERE project = ? ORDER BY created_at",
+            (project,),
+        ).fetchall()
+        if _print_todo_list(rows, args.all, args.show_id) == 0:
+            print(f"（{project} に該当するMESSAGEはありません）")
 
 
 def _print_or_page(output):
@@ -662,6 +734,30 @@ def cmd_show(args):
         sys.exit(1)
     created_at, body = row
     title = f"# collog show {args.kind}: {project} #{args.id}"
+    _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
+
+
+def cmd_show_message(args):
+    """messageを1件表示する。summary/changeのshowと違い、表示＝既読化という副作用を
+    持つため別関数にしている（表示しただけの状態に留めるshowとは性質が異なる）。
+    """
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    row = conn.execute(
+        "SELECT created_at, read_at, body FROM messages WHERE id = ? AND project = ?",
+        (args.id, project),
+    ).fetchone()
+    if row is None:
+        print(
+            f"エラー: 該当するmessageが見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    created_at, read_at, body = row
+    if read_at is None:
+        conn.execute("UPDATE messages SET read_at = ? WHERE id = ?", (now(), args.id))
+        conn.commit()
+    title = f"# collog show message: {project} #{args.id}"
     _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
 
 
@@ -1011,7 +1107,7 @@ def build_parser():
     parser = argparse.ArgumentParser(prog="collog", description="プロジェクト横断トラッカー")
     sub = parser.add_subparsers(
         dest="cmd", required=True,
-        metavar="{init,projects,rename,add,finish,summary,change,todo,request,"
+        metavar="{init,projects,rename,add,finish,summary,change,todo,request,message,"
                  "search,show,update,delete,export,import,help}",
     )
 
@@ -1058,6 +1154,14 @@ def build_parser():
                     help="依頼元のプロジェクト（省略時はカレントディレクトリから推測）")
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_todo, is_request=True)
+
+    p = add_sub.add_parser(
+        "message", help="他プロジェクトへの連絡を追加（お知らせ・不具合の知らせなど）")
+    p.add_argument("project", help="宛先のプロジェクト")
+    p.add_argument("--from", dest="from_project", default=None, metavar="PROJECT",
+                    help="送信元のプロジェクト（省略時はカレントディレクトリから推測）")
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_add_message)
 
     finish_p = sub.add_parser("finish", help="TODOを完了にする")
     finish_sub = finish_p.add_subparsers(dest="finish_target", required=True)
@@ -1136,6 +1240,17 @@ def build_parser():
                     help="#id を表示する（finish todoで指定する時など）")
     p.set_defaults(func=cmd_request)
 
+    p = _add_parser_with_hidden_aliases(
+        sub, "message", aliases=["messages"],
+        help="他プロジェクトからの連絡を表示する（省略時は全プロジェクト横断）",
+    )
+    p.add_argument("project", nargs="?", default=None,
+                    help="省略時は全プロジェクトを横断表示（未読の見落とし防止用）")
+    p.add_argument("--all", action="store_true", help="既読分も含めて表示")
+    p.add_argument("--id", dest="show_id", action="store_true",
+                    help="#id を表示する（show messageで指定する時など）")
+    p.set_defaults(func=cmd_message)
+
     search_p = sub.add_parser("search", help="本文にキーワードを含む記録を横断検索")
     search_sub = search_p.add_subparsers(dest="search_target", required=True,
                                           metavar="{summary,change,todo,all}")
@@ -1154,7 +1269,7 @@ def build_parser():
                         help="全プロジェクトを横断して検索する（projectとは同時指定不可）")
         p.set_defaults(func=cmd_search, kind=kind)
 
-    show_p = sub.add_parser("show", help="SUMMARY/CHANGESを1件だけ表示する")
+    show_p = sub.add_parser("show", help="SUMMARY/CHANGES/MESSAGEを1件だけ表示する")
     show_sub = show_p.add_subparsers(dest="show_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1163,6 +1278,13 @@ def build_parser():
                         help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_show, kind=kind)
+
+    p = show_sub.add_parser(
+        "message", help="指定idのmessageを1件表示（未読なら既読にする）")
+    p.add_argument("project", nargs="?", default=None,
+                    help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_show_message)
 
     update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODOの本文を書き換える")
     update_sub = update_p.add_subparsers(dest="update_target", required=True)
