@@ -205,20 +205,15 @@ def require_registered_project(conn, project):
 def _project_from_cwd(conn):
     """カレントディレクトリから登録済みプロジェクトを推測する。
 
-    projects.pathと完全一致、またはその配下にいる場合にマッチする。
-    複数該当する場合（ネストした登録）は最も深い（specific）パスを優先する。
-    一致が無ければNoneを返す。
+    projects.pathと完全一致する場合のみマッチする（配下のサブディレクトリは対象外。
+    親プロジェクトの登録パス配下に未登録の子ディレクトリができた場合、誤ってその
+    親にマッチして記録されてしまう事故を避けるため）。一致が無ければNoneを返す。
     """
     cwd = os.path.realpath(os.getcwd())
-    best_name = None
-    best_len = -1
     for name, path in conn.execute("SELECT name, path FROM projects WHERE path IS NOT NULL"):
-        proj_path = os.path.realpath(path)
-        if cwd == proj_path or cwd.startswith(proj_path + os.sep):
-            if len(proj_path) > best_len:
-                best_len = len(proj_path)
-                best_name = name
-    return best_name
+        if cwd == os.path.realpath(path):
+            return name
+    return None
 
 
 def _resolve_project(value, conn, label="project"):
@@ -230,9 +225,12 @@ def _resolve_project(value, conn, label="project"):
         return value
     detected = _project_from_cwd(conn)
     if detected is None:
+        # 「collog initしてください」と誘導すると、既存プロジェクトのサブディレクトリ
+        # （配下マッチ廃止により推測できなくなったケース）でも安易に新規initされて
+        # しまう恐れがあるため、ここでは明示指定だけを促す（initの提案はしない）。
         print(
             f"エラー: {label}が指定されておらず、カレントディレクトリからも推測できません。"
-            f"明示的に指定するか、このディレクトリで`collog init <project>`を実行してください。",
+            f"明示的に指定してください。",
             file=sys.stderr,
         )
         sys.exit(1)

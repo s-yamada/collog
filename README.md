@@ -48,9 +48,8 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 ### projectのカレントディレクトリ自動推測
 
-- `[project]`省略時、カレントディレクトリを登録済み`projects.path`と照合して推測（サブディレクトリからでも可）
-- 複数該当する場合は最も深いパスを優先
-- 該当なしかつ`project`も省略の場合はエラー（`collog init`を促すメッセージ）
+- `[project]`省略時、カレントディレクトリを登録済み`projects.path`と完全一致する場合のみ推測する（配下のサブディレクトリは対象外）
+- 該当なしかつ`project`も省略の場合はエラー（明示的な指定を促すメッセージ。`collog init`は提案しない）
 - 対象外: `summary`/`request`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`の`project`（依頼先）
 
 ### summary・change の表示
