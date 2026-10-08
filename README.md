@@ -34,8 +34,10 @@ collog summary [project] [-n] [--date YYYY-MM-DD] [--from 日時] [--to 日時] 
 collog change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
                                            # CHANGESの一覧をMarkdown形式で表示（既定: 全件・古い順）
 collog todo [project] [--all] [--id]      # TODO一覧（既定は未完了のみ、requestも含む）
-collog request [project] [--all] [--id]   # 他プロジェクトからの依頼を表示（省略時は全プロジェクト横断）
-collog message [project] [--all] [--id]   # 他プロジェクトからの連絡を表示（省略時は全プロジェクト横断）
+collog request [project] [--global|-g] [--all] [--id]
+                                           # 他プロジェクトからの依頼を表示（既定は自分宛て、-gで全プロジェクト横断）
+collog message [project] [--global|-g] [--all] [--id]
+                                           # 他プロジェクトからの連絡を表示（既定は自分宛て、-gで全プロジェクト横断）
 
 collog search summary|change|todo|all <keyword> [project] [--global|-g]
                                            # 本文にkeywordを含む記録を検索（既定はカレントディレクトリのプロジェクトのみ）
@@ -55,7 +57,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と完全一致する場合のみ推測する（配下のサブディレクトリは対象外）
 - 該当なしかつ`project`も省略の場合はエラー（明示的な指定を促すメッセージ。`collog init`は提案しない）
-- 対象外: `summary`/`request`/`message`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`/`add message`の`project`（宛先）
+- 対象外: `summary`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`/`add message`の`project`（宛先）
 - `[project]`の代わりに`--path <dir>`でディレクトリから指定できる（登録パスと完全一致のみ。見つからなければエラー。`project`との同時指定は不可）
 
 ### summary・change の表示
@@ -95,14 +97,14 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `add request <project> [--from <source_project>]`で他プロジェクトからの依頼をTODOとして記録
 - `project`（依頼先）は明示必須、`--from`（依頼元）は省略するとカレントディレクトリから推測
 - `todo`はrequestも含めて全件表示（見出しに`[from: <source_project>]`が付く）
-- `request`でrequestだけに絞り込み。`project`省略時は全プロジェクトの未完了requestをプロジェクトごとに横断表示（他プロジェクトへの依頼の対応漏れチェック用）
+- `request`でrequestだけに絞り込み（既定は自分宛て）。`--global`/`-g`で全プロジェクトの未完了requestをプロジェクトごとに横断表示（他プロジェクトへの依頼の対応漏れチェック用）
 - 完了操作は通常のtodoと同じ`finish todo`
 
 ### message（他プロジェクトへの連絡）
 
 - `add message <project> [--from <source_project>]`で他プロジェクトへの連絡（お知らせ・不具合の知らせなど）を記録
 - `request`（依頼・実装を求める）とは別の種類。`project`（宛先）は明示必須、`--from`（送信元）は省略するとカレントディレクトリから推測
-- `message`で表示。`project`省略時は全プロジェクトの未読messageをプロジェクトごとに横断表示（`--all`で既読分も含む）
+- `message`で表示（既定は自分宛ての未読のみ、`--all`で既読分も含む）。`--global`/`-g`で全プロジェクトをプロジェクトごとに横断表示
 - 既読にする操作は`show message <project> <id>`（1件を表示すると同時に既読になる。専用の既読コマンドは無い）
 
 ### update/delete（訂正・削除）

@@ -476,10 +476,13 @@ def cmd_todos(args):
 
 def cmd_request(args):
     conn = get_conn()
-    if args.project is None:
-        # 横断表示: 全プロジェクトのrequest（from_projectがあるtodo）をプロジェクトごとに
-        # まとめて表示する。対応漏れ（他プロジェクトへの依頼が放置されていないか）の
-        # チェック用途を想定しているため、既定は未完了・未見送りのみ（--allで含める）。
+    if args.all_projects and args.project:
+        print("エラー: projectと--global/-gは同時に指定できません", file=sys.stderr)
+        sys.exit(1)
+    if args.all_projects:
+        # 横断表示（--global）: 全プロジェクトのrequest（from_projectがあるtodo）を
+        # プロジェクトごとにまとめて表示する。対応漏れのチェック用途を想定しているため、
+        # 既定は未完了・未見送りのみ（--allで含める）。
         rows = conn.execute(
             "SELECT project, id, created_at, completed_at, from_project, body, "
             "declined_at, decline_reason FROM todos "
@@ -514,8 +517,11 @@ def cmd_request(args):
 
 def cmd_message(args):
     conn = get_conn()
-    if args.project is None:
-        # 横断表示: 全プロジェクトのmessageをプロジェクトごとにまとめて表示する。
+    if args.all_projects and args.project:
+        print("エラー: projectと--global/-gは同時に指定できません", file=sys.stderr)
+        sys.exit(1)
+    if args.all_projects:
+        # 横断表示（--global）: 全プロジェクトのmessageをプロジェクトごとにまとめて表示する。
         # 既定は未読のみ（--allで既読分も含む）。requestと同じ構造。
         rows = conn.execute(
             "SELECT project, id, created_at, read_at, from_project, body FROM messages "
@@ -1335,9 +1341,11 @@ def build_parser():
 
     p = _add_parser_with_hidden_aliases(
         sub, "request", aliases=["requests"],
-        help="他プロジェクトからの依頼（request）を表示する（省略時は全プロジェクト横断）",
+        help="他プロジェクトからの依頼（request）を表示する（--globalで全プロジェクト横断）",
     )
-    _add_project_arg(p, "省略時は全プロジェクトを横断表示（対応漏れチェック用）")
+    _add_project_arg(p, project_help)
+    p.add_argument("--global", "-g", dest="all_projects", action="store_true",
+                    help="全プロジェクトを横断して表示する（対応漏れチェック用。projectとは同時指定不可）")
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（finish todoで指定する時など）")
@@ -1345,9 +1353,11 @@ def build_parser():
 
     p = _add_parser_with_hidden_aliases(
         sub, "message", aliases=["messages"],
-        help="他プロジェクトからの連絡を表示する（省略時は全プロジェクト横断）",
+        help="他プロジェクトからの連絡を表示する（--globalで全プロジェクト横断）",
     )
-    _add_project_arg(p, "省略時は全プロジェクトを横断表示（未読の見落とし防止用）")
+    _add_project_arg(p, project_help)
+    p.add_argument("--global", "-g", dest="all_projects", action="store_true",
+                    help="全プロジェクトを横断して表示する（projectとは同時指定不可）")
     p.add_argument("--all", action="store_true", help="既読分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（show messageで指定する時など）")
