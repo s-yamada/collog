@@ -16,6 +16,9 @@ import subprocess
 import sys
 from datetime import datetime
 
+__version__ = "1.1.0"
+__version_date__ = "2026-10-08"   # 上記バージョン番号の更新日（手動更新）
+
 DEFAULT_DB_PATH = os.path.expanduser("~/.collog/collog.db")
 
 
@@ -1205,6 +1208,8 @@ def _add_project_arg(p, help_text):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="collog", description="プロジェクト横断トラッカー")
+    parser.add_argument("--version", action="version",
+                         version=f"collog {__version__} ({__version_date__})")
     sub = parser.add_subparsers(
         dest="cmd", required=True,
         metavar="{init,projects,rename,add,finish,summary,change,todo,request,message,"
