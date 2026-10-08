@@ -216,18 +216,22 @@ def require_registered_project(conn, project):
         sys.exit(1)
 
 
-def _project_from_cwd(conn):
-    """カレントディレクトリから登録済みプロジェクトを推測する。
+def _project_at(dirpath, conn):
+    """dirpathと登録パスが完全一致するプロジェクト名を返す。一致が無ければNone。
 
-    projects.pathと完全一致する場合のみマッチする（配下のサブディレクトリは対象外。
-    親プロジェクトの登録パス配下に未登録の子ディレクトリができた場合、誤ってその
-    親にマッチして記録されてしまう事故を避けるため）。一致が無ければNoneを返す。
+    配下のサブディレクトリは対象外（親プロジェクトの登録パス配下に未登録の子
+    ディレクトリができた場合、誤ってその親にマッチして記録されてしまう事故を避けるため）。
     """
-    cwd = os.path.realpath(os.getcwd())
+    target = os.path.realpath(os.path.expanduser(dirpath))
     for name, path in conn.execute("SELECT name, path FROM projects WHERE path IS NOT NULL"):
-        if cwd == os.path.realpath(path):
+        if target == os.path.realpath(path):
             return name
     return None
+
+
+def _project_from_cwd(conn):
+    """カレントディレクトリから登録済みプロジェクトを推測する。一致が無ければNone。"""
+    return _project_at(os.getcwd(), conn)
 
 
 def _resolve_project(value, conn, label="project"):
@@ -1185,6 +1189,14 @@ def _add_parser_with_hidden_aliases(subparsers_action, name, aliases=(), **kwarg
     return parser
 
 
+def _add_project_arg(p, help_text):
+    """省略可能なproject引数と、その代わりにディレクトリで指定する--pathを追加する。"""
+    p.add_argument("project", nargs="?", default=None, help=help_text)
+    p.add_argument("--path", dest="project_path", default=None, metavar="DIR",
+                    help="projectの代わりにディレクトリで指定する"
+                         "（登録パスと完全一致。projectとは同時指定不可）")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="collog", description="プロジェクト横断トラッカー")
     sub = parser.add_subparsers(
@@ -1214,18 +1226,18 @@ def build_parser():
     add_sub = add_p.add_subparsers(dest="add_target", required=True)
 
     p = add_sub.add_parser("summary", help="標準入力の内容をSUMMARYとして記録")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_entry, kind="summary")
 
     p = add_sub.add_parser("change", help="標準入力の内容をCHANGESとして記録")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_entry, kind="change")
 
     p = add_sub.add_parser(
         "todo", help="将来実装する機能・変更の要件を追加（作業手順・確認待ちは書かない）")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_todo, from_project=None, is_request=False)
 
@@ -1249,7 +1261,7 @@ def build_parser():
     finish_sub = finish_p.add_subparsers(dest="finish_target", required=True)
 
     p = finish_sub.add_parser("todo", help="指定IDのTODOを完了にする")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.add_argument("--at", default=None, help="完了日時を指定して遡って記録する（同上の形式）")
     p.set_defaults(func=cmd_finish_todo)
@@ -1260,7 +1272,7 @@ def build_parser():
 
     p = decline_sub.add_parser(
         "todo", help="指定IDのTODOを見送りにする（requestにも使える）")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.add_argument("--at", default=None, help="見送り日時を指定して遡って記録する（同上の形式）")
     p.set_defaults(func=cmd_decline_todo)
@@ -1271,8 +1283,7 @@ def build_parser():
         sub, "summary", aliases=["summaries"],
         help="SUMMARYを表示する（省略時は全プロジェクト横断、指定時はそのプロジェクトの履歴）",
     )
-    p.add_argument("project", nargs="?", default=None,
-                    help="省略時は全プロジェクトを横断表示（各プロジェクトの最新1件）")
+    _add_project_arg(p, "省略時は全プロジェクトを横断表示（各プロジェクトの最新1件）")
     p.add_argument("-n", type=int, default=None,
                     help="表示件数（プロジェクト指定時のみ有効。"
                          "既定5、--date/--from/--to指定時は全件）")
@@ -1301,7 +1312,7 @@ def build_parser():
     p = _add_parser_with_hidden_aliases(
         sub, "change", aliases=["changes"], help="CHANGESの一覧をMarkdown形式で表示",
     )
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("-n", type=int, default=None, help="表示件数（既定: 全件）")
     p.add_argument("--sort", choices=["created_at", "id"], default="created_at",
                     help="並べ替えに使う列（既定: created_at）")
@@ -1316,7 +1327,7 @@ def build_parser():
         sub, "todo", aliases=["todos"],
         help="TODO一覧（デフォルトは未完了のみ、requestも含む）",
     )
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（finish todoで指定する時など）")
@@ -1326,8 +1337,7 @@ def build_parser():
         sub, "request", aliases=["requests"],
         help="他プロジェクトからの依頼（request）を表示する（省略時は全プロジェクト横断）",
     )
-    p.add_argument("project", nargs="?", default=None,
-                    help="省略時は全プロジェクトを横断表示（対応漏れチェック用）")
+    _add_project_arg(p, "省略時は全プロジェクトを横断表示（対応漏れチェック用）")
     p.add_argument("--all", action="store_true", help="完了分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（finish todoで指定する時など）")
@@ -1337,8 +1347,7 @@ def build_parser():
         sub, "message", aliases=["messages"],
         help="他プロジェクトからの連絡を表示する（省略時は全プロジェクト横断）",
     )
-    p.add_argument("project", nargs="?", default=None,
-                    help="省略時は全プロジェクトを横断表示（未読の見落とし防止用）")
+    _add_project_arg(p, "省略時は全プロジェクトを横断表示（未読の見落とし防止用）")
     p.add_argument("--all", action="store_true", help="既読分も含めて表示")
     p.add_argument("--id", dest="show_id", action="store_true",
                     help="#id を表示する（show messageで指定する時など）")
@@ -1357,7 +1366,7 @@ def build_parser():
     for name, aliases, kind, help_text in search_targets:
         p = _add_parser_with_hidden_aliases(search_sub, name, aliases=aliases, help=help_text)
         p.add_argument("keyword")
-        p.add_argument("project", nargs="?", default=None, help=project_help)
+        _add_project_arg(p, project_help)
         p.add_argument("--global", "-g", dest="all_projects", action="store_true",
                         help="全プロジェクトを横断して検索する（projectとは同時指定不可）")
         p.set_defaults(func=cmd_search, kind=kind)
@@ -1367,15 +1376,13 @@ def build_parser():
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
         p = show_sub.add_parser(name, help=f"指定idの{kind}を1件表示")
-        p.add_argument("project", nargs="?", default=None,
-                        help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
+        _add_project_arg(p, project_help)
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_show, kind=kind)
 
     p = show_sub.add_parser(
         "message", help="指定idのmessageを1件表示（未読なら既読にする）")
-    p.add_argument("project", nargs="?", default=None,
-                    help="省略時はカレントディレクトリから登録済みプロジェクトを推測する")
+    _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_show_message)
 
@@ -1384,13 +1391,13 @@ def build_parser():
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
         p = update_sub.add_parser(name, help=f"指定idの{kind}の本文を標準入力の内容で置き換える")
-        p.add_argument("project", nargs="?", default=None, help=project_help)
+        _add_project_arg(p, project_help)
         p.add_argument("id", type=int)
         p.add_argument("--at", default=None, help=at_help)
         p.set_defaults(func=cmd_update_entry, kind=kind)
 
     p = update_sub.add_parser("todo", help="指定idのTODOの本文を標準入力の内容で置き換える")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_update_todo)
@@ -1400,18 +1407,17 @@ def build_parser():
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
         p = delete_sub.add_parser(name, help=f"指定idの{kind}を削除する")
-        p.add_argument("project", nargs="?", default=None, help=project_help)
+        _add_project_arg(p, project_help)
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_delete_entry, kind=kind)
 
     p = delete_sub.add_parser("todo", help="指定idのTODOを削除する")
-    p.add_argument("project", nargs="?", default=None, help=project_help)
+    _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_delete_todo)
 
     p = sub.add_parser("export", help="プロジェクトのデータをJSON形式で書き出す（省略時は全プロジェクト）")
-    p.add_argument("project", nargs="?", default=None,
-                    help="省略時は全プロジェクトを対象にする（statusと同様、CWD自動推測はしない）")
+    _add_project_arg(p, "省略時は全プロジェクトを対象にする（CWD自動推測はしない）")
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("import", help="標準入力のJSON（exportの出力形式）を取り込む")
@@ -1430,6 +1436,17 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    # --pathはここでプロジェクト名に変換してargs.projectに入れる（各コマンドの処理は
+    # args.projectを読むだけで済むようにするため）。
+    if getattr(args, "project_path", None) is not None:
+        if args.project is not None:
+            print("エラー: projectと--pathは同時に指定できません", file=sys.stderr)
+            sys.exit(1)
+        args.project = _project_at(args.project_path, get_conn())
+        if args.project is None:
+            print(f"エラー: パス '{args.project_path}' に一致する登録済みプロジェクトがありません",
+                  file=sys.stderr)
+            sys.exit(1)
     args.func(args)
 
 

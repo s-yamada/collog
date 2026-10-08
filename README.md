@@ -56,6 +56,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と完全一致する場合のみ推測する（配下のサブディレクトリは対象外）
 - 該当なしかつ`project`も省略の場合はエラー（明示的な指定を促すメッセージ。`collog init`は提案しない）
 - 対象外: `summary`/`request`/`message`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`/`add message`の`project`（宛先）
+- `[project]`の代わりに`--path <dir>`でディレクトリから指定できる（登録パスと完全一致のみ。見つからなければエラー。`project`との同時指定は不可）
 
 ### summary・change の表示
 
