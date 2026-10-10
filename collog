@@ -887,6 +887,47 @@ def cmd_delete_todo(args):
     print(f"OK: TODO #{args.id} ({project}) を削除しました")
 
 
+def cmd_update_message(args):
+    """本文を書き換えたら未読に戻す（書き換え後の内容を受信側がまだ見ていないため）。"""
+    body = read_body()
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    if args.at:
+        cur = conn.execute(
+            "UPDATE messages SET body = ?, created_at = ?, read_at = NULL WHERE id = ? AND project = ?",
+            (body, resolve_timestamp(args.at), args.id, project),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE messages SET body = ?, read_at = NULL WHERE id = ? AND project = ?",
+            (body, args.id, project),
+        )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当するMESSAGEが見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: MESSAGE #{args.id} ({project}) を更新しました")
+
+
+def cmd_delete_message(args):
+    conn = get_conn()
+    project = _resolve_project(args.project, conn)
+    cur = conn.execute(
+        "DELETE FROM messages WHERE id = ? AND project = ?", (args.id, project)
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        print(
+            f"エラー: 該当するMESSAGEが見つかりません（project={project}, id={args.id}）",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"OK: MESSAGE #{args.id} ({project}) を削除しました")
+
+
 def cmd_export(args):
     conn = get_conn()
     if args.project:
@@ -1401,7 +1442,7 @@ def build_parser():
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_show_message)
 
-    update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODOの本文を書き換える")
+    update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODO/MESSAGEの本文を書き換える")
     update_sub = update_p.add_subparsers(dest="update_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1417,7 +1458,14 @@ def build_parser():
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_update_todo)
 
-    delete_p = sub.add_parser("delete", help="SUMMARY/CHANGES/TODOを削除する")
+    p = update_sub.add_parser(
+        "message", help="指定idのMESSAGEの本文を標準入力の内容で置き換える（未読に戻す）")
+    _add_project_arg(p, project_help)
+    p.add_argument("id", type=int)
+    p.add_argument("--at", default=None, help=at_help)
+    p.set_defaults(func=cmd_update_message)
+
+    delete_p = sub.add_parser("delete", help="SUMMARY/CHANGES/TODO/MESSAGEを削除する")
     delete_sub = delete_p.add_subparsers(dest="delete_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1430,6 +1478,11 @@ def build_parser():
     _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_delete_todo)
+
+    p = delete_sub.add_parser("message", help="指定idのMESSAGEを削除する")
+    _add_project_arg(p, project_help)
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_delete_message)
 
     p = sub.add_parser("export", help="プロジェクトのデータをJSON形式で書き出す（省略時は全プロジェクト）")
     _add_project_arg(p, "省略時は全プロジェクトを対象にする（CWD自動推測はしない）")

@@ -32,8 +32,8 @@ collog search summary|change|todo|all <keyword> [project] [--global|-g]
 collog show summary|change|message [project] <id>
                                            # SUMMARY/CHANGES/MESSAGEを1件だけ表示（messageは未読なら既読にする）
 
-collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
-collog delete summary|change|todo [project] <id>              # 削除
+collog update summary|change|todo|message [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
+collog delete summary|change|todo|message [project] <id>              # 削除
 
 collog export [project]                   # データをJSON形式で書き出す（省略時は全プロジェクト）
 collog import [--safety]                  # 標準入力のJSON（exportの出力形式）を取り込む
@@ -97,8 +97,10 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 ## update/delete（訂正・削除）
 
-- `update summary|change|todo [project] <id> [--at 日時]`で本文を標準入力の内容に置き換え
-- `delete summary|change|todo [project] <id>`で削除
+- `update summary|change|todo|message [project] <id> [--at 日時]`で本文を標準入力の内容に置き換え
+- `delete summary|change|todo|message [project] <id>`で削除
+- `project`は記録先（request・messageは宛先）。送信元が取り下げる場合も宛先を指定する
+- `update message`は既読を未読に戻す（書き換え後の内容を受信側に再度見せるため）
 - `update`は`add`と同様、見出しレベル制約（`#`/`##`禁止）を検証
 - `project`/`kind`/`id`の組み合わせが一致しない場合はエラー
 
