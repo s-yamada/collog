@@ -16,8 +16,8 @@ import subprocess
 import sys
 from datetime import datetime
 
-__version__ = "1.1.0"
-__version_date__ = "2026-10-08"   # 上記バージョン番号の更新日（手動更新）
+__version__ = "1.1.1"
+__version_date__ = "2026-10-11"   # 上記バージョン番号の更新日（手動更新）
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.collog/collog.db")
 
