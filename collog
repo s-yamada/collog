@@ -16,8 +16,8 @@ import subprocess
 import sys
 from datetime import datetime
 
-__version__ = "1.1.1"
-__version_date__ = "2026-10-11"   # 上記バージョン番号の更新日（手動更新）
+__version__ = "1.1.2"
+__version_date__ = "2026-10-27"   # 上記バージョン番号の更新日（手動更新）
 
 DEFAULT_DB_PATH = os.path.expanduser("~/.collog/collog.db")
 
@@ -66,16 +66,8 @@ def get_conn():
             updated_at TEXT NOT NULL
         )"""
     )
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project TEXT NOT NULL,
-            from_project TEXT,
-            created_at TEXT NOT NULL,
-            read_at TEXT,
-            body TEXT NOT NULL
-        )"""
-    )
+    # 既存DB向けマイグレーション: messageコマンドの廃止に伴いmessagesテーブルを削除。
+    conn.execute("DROP TABLE IF EXISTS messages")
     return conn
 
 
@@ -346,10 +338,10 @@ def cmd_add_entry(args):
 
 
 def _resolve_sender_project(conn, dest_project, from_project_arg):
-    """他プロジェクトへの依頼・連絡の送信元(from_project)を解決する。
+    """他プロジェクトへの依頼の送信元(from_project)を解決する。
 
     明示指定が無ければCWD自動推測を試み、それも失敗すればエラー終了する。
-    宛先(dest_project)と送信元が同じ場合もエラーにする。request/messageで共通。
+    宛先(dest_project)と送信元が同じ場合もエラーにする。
     """
     from_project = from_project_arg
     if from_project is None:
@@ -387,21 +379,6 @@ def cmd_add_todo(args):
     print(f"OK: TODO #{cur.lastrowid} を追加しました ({project}){suffix}")
 
 
-def cmd_add_message(args):
-    body = read_body()
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    require_registered_project(conn, project)
-    from_project = _resolve_sender_project(conn, project, args.from_project)
-
-    cur = conn.execute(
-        "INSERT INTO messages (project, from_project, created_at, body) VALUES (?, ?, ?, ?)",
-        (project, from_project, resolve_timestamp(args.at), body),
-    )
-    conn.commit()
-    print(f"OK: MESSAGE #{cur.lastrowid} を追加しました ({project})（from: {from_project}）")
-
-
 def cmd_finish_todo(args):
     conn = get_conn()
     project = _resolve_project(args.project, conn)
@@ -434,11 +411,9 @@ def cmd_decline_todo(args):
 
 
 def _print_todo_list(rows, show_all, show_id):
-    """(id, created_at, 完了/既読日時, from_project, body, declined_at, decline_reason)の
-    行リストをタスクリスト形式で表示する。
+    """(id, created_at, completed_at, from_project, body, declined_at, decline_reason)の
+    行リストをタスクリスト形式で表示する（todo/requestで共通）。
 
-    todo/request/messageで共通（messageはcompleted_at位置にread_atを渡し、
-    declined_at/decline_reasonは常にNone。messageに見送りの概念は無いため）。
     表示した件数を返す（0件かどうかの判定を呼び出し元に委ねるため）。
     """
     shown = 0
@@ -516,47 +491,6 @@ def cmd_request(args):
         ).fetchall()
         if _print_todo_list(rows, args.all, args.show_id) == 0:
             print(f"（{project} に該当するREQUESTはありません）")
-
-
-def cmd_message(args):
-    conn = get_conn()
-    if args.all_projects and args.project:
-        print("エラー: projectと--global/-gは同時に指定できません", file=sys.stderr)
-        sys.exit(1)
-    if args.all_projects:
-        # 横断表示（--global）: 全プロジェクトのmessageをプロジェクトごとにまとめて表示する。
-        # 既定は未読のみ（--allで既読分も含む）。requestと同じ構造。
-        rows = conn.execute(
-            "SELECT project, id, created_at, read_at, from_project, body FROM messages "
-            "ORDER BY project, created_at"
-        ).fetchall()
-        by_project = {}
-        for project, msg_id, created_at, read_at, from_project, body in rows:
-            if not args.all and read_at is not None:
-                continue
-            # messageにdeclined_at/decline_reasonは無いため、_print_todo_listの
-            # 共通シグネチャに合わせてNoneを補う。
-            by_project.setdefault(project, []).append(
-                (msg_id, created_at, read_at, from_project, body, None, None)
-            )
-        if not by_project:
-            print("（該当するMESSAGEはありません）")
-            return
-        for i, project in enumerate(sorted(by_project)):
-            if i > 0:
-                print()
-            print(f"### {project}")
-            _print_todo_list(by_project[project], True, args.show_id)
-    else:
-        project = _resolve_project(args.project, conn)
-        rows = conn.execute(
-            "SELECT id, created_at, read_at, from_project, body FROM messages "
-            "WHERE project = ? ORDER BY created_at",
-            (project,),
-        ).fetchall()
-        rows = [(i, c, r, f, b, None, None) for i, c, r, f, b in rows]
-        if _print_todo_list(rows, args.all, args.show_id) == 0:
-            print(f"（{project} に該当するMESSAGEはありません）")
 
 
 def _print_or_page(output):
@@ -781,30 +715,6 @@ def cmd_show(args):
     _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
 
 
-def cmd_show_message(args):
-    """messageを1件表示する。summary/changeのshowと違い、表示＝既読化という副作用を
-    持つため別関数にしている（表示しただけの状態に留めるshowとは性質が異なる）。
-    """
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    row = conn.execute(
-        "SELECT created_at, read_at, body FROM messages WHERE id = ? AND project = ?",
-        (args.id, project),
-    ).fetchone()
-    if row is None:
-        print(
-            f"エラー: 該当するmessageが見つかりません（project={project}, id={args.id}）",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    created_at, read_at, body = row
-    if read_at is None:
-        conn.execute("UPDATE messages SET read_at = ? WHERE id = ?", (now(), args.id))
-        conn.commit()
-    title = f"# collog show message: {project} #{args.id}"
-    _print_or_page(_format_dated_entries(title, [(args.id, created_at, body)]))
-
-
 def cmd_update_entry(args):
     body = read_body()
     validate_body_headings(body)
@@ -887,47 +797,6 @@ def cmd_delete_todo(args):
     print(f"OK: TODO #{args.id} ({project}) を削除しました")
 
 
-def cmd_update_message(args):
-    """本文を書き換えたら未読に戻す（書き換え後の内容を受信側がまだ見ていないため）。"""
-    body = read_body()
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    if args.at:
-        cur = conn.execute(
-            "UPDATE messages SET body = ?, created_at = ?, read_at = NULL WHERE id = ? AND project = ?",
-            (body, resolve_timestamp(args.at), args.id, project),
-        )
-    else:
-        cur = conn.execute(
-            "UPDATE messages SET body = ?, read_at = NULL WHERE id = ? AND project = ?",
-            (body, args.id, project),
-        )
-    conn.commit()
-    if cur.rowcount == 0:
-        print(
-            f"エラー: 該当するMESSAGEが見つかりません（project={project}, id={args.id}）",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"OK: MESSAGE #{args.id} ({project}) を更新しました")
-
-
-def cmd_delete_message(args):
-    conn = get_conn()
-    project = _resolve_project(args.project, conn)
-    cur = conn.execute(
-        "DELETE FROM messages WHERE id = ? AND project = ?", (args.id, project)
-    )
-    conn.commit()
-    if cur.rowcount == 0:
-        print(
-            f"エラー: 該当するMESSAGEが見つかりません（project={project}, id={args.id}）",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"OK: MESSAGE #{args.id} ({project}) を削除しました")
-
-
 def cmd_export(args):
     conn = get_conn()
     if args.project:
@@ -949,11 +818,6 @@ def cmd_export(args):
             "declined_at, decline_reason FROM todos WHERE project = ? ORDER BY id",
             (args.project,),
         ).fetchall()
-        message_rows = conn.execute(
-            "SELECT id, project, from_project, created_at, read_at, body "
-            "FROM messages WHERE project = ? ORDER BY id",
-            (args.project,),
-        ).fetchall()
     else:
         project_rows = conn.execute(
             "SELECT name, path, created_at, updated_at FROM projects ORDER BY name"
@@ -964,10 +828,6 @@ def cmd_export(args):
         todo_rows = conn.execute(
             "SELECT id, project, created_at, completed_at, from_project, body, "
             "declined_at, decline_reason FROM todos ORDER BY id"
-        ).fetchall()
-        message_rows = conn.execute(
-            "SELECT id, project, from_project, created_at, read_at, body "
-            "FROM messages ORDER BY id"
         ).fetchall()
 
     data = {
@@ -988,13 +848,6 @@ def cmd_export(args):
                 "declined_at": da, "decline_reason": dr,
             }
             for i, pr, c, ca, fp, b, da, dr in todo_rows
-        ],
-        "messages": [
-            {
-                "id": i, "project": pr, "from_project": fp,
-                "created_at": c, "read_at": ra, "body": b,
-            }
-            for i, pr, fp, c, ra, b in message_rows
         ],
     }
     # ensure_ascii=False: 日本語本文が\uXXXXにエスケープされて読みにくくなるのを防ぐ
@@ -1017,9 +870,11 @@ def cmd_import(args):
     projects_in = data.get("projects", [])
     entries_in = data.get("entries", [])
     todos_in = data.get("todos", [])
-    messages_in = data.get("messages", [])
+    if data.get("messages"):
+        print(f"警告: messagesは廃止したため取り込みません（{len(data['messages'])}件）",
+              file=sys.stderr)
 
-    # INSERTを始める前に、entries/todos/messagesが参照するprojectが「既に登録済み」か
+    # INSERTを始める前に、entries/todosが参照するprojectが「既に登録済み」か
     # 「このimportデータのprojectsに含まれている」かを検証する（不整合な取り込みを防ぐ）。
     known_projects = {row[0] for row in conn.execute("SELECT name FROM projects")}
     known_projects |= {p["name"] for p in projects_in}
@@ -1037,16 +892,6 @@ def cmd_import(args):
             if name and name not in known_projects:
                 print(
                     f"エラー: todosが参照するプロジェクト '{name}'（{key}）が未登録で、"
-                    f"importデータのprojectsにも含まれていません。",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-    for m in messages_in:
-        for key in ("project", "from_project"):
-            name = m.get(key)
-            if name and name not in known_projects:
-                print(
-                    f"エラー: messagesが参照するプロジェクト '{name}'（{key}）が未登録で、"
                     f"importデータのprojectsにも含まれていません。",
                     file=sys.stderr,
                 )
@@ -1109,22 +954,6 @@ def cmd_import(args):
                          t.get("decline_reason")),
                     )
 
-            for m in messages_in:
-                if m.get("id") is not None:
-                    conn.execute(
-                        f"INSERT {insert_or}INTO messages "
-                        "(id, project, from_project, created_at, read_at, body) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        (m["id"], m["project"], m.get("from_project"), m["created_at"],
-                         m.get("read_at"), m["body"]),
-                    )
-                else:
-                    conn.execute(
-                        "INSERT INTO messages (project, from_project, created_at, read_at, body) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (m["project"], m.get("from_project"), m["created_at"],
-                         m.get("read_at"), m["body"]),
-                    )
     except sqlite3.IntegrityError as ex:
         print(f"エラー: ID/name重複のため中断しました（--safety指定時はREPLACEされません）: {ex}",
               file=sys.stderr)
@@ -1132,7 +961,7 @@ def cmd_import(args):
 
     print(
         f"OK: インポート完了 (projects: {projects_created}件新規登録, "
-        f"entries: {len(entries_in)}件, todos: {len(todos_in)}件, messages: {len(messages_in)}件)"
+        f"entries: {len(entries_in)}件, todos: {len(todos_in)}件)"
     )
 
 
@@ -1253,7 +1082,7 @@ def build_parser():
                          version=f"collog {__version__} ({__version_date__})")
     sub = parser.add_subparsers(
         dest="cmd", required=True,
-        metavar="{init,projects,rename,add,finish,summary,change,todo,request,message,"
+        metavar="{init,projects,rename,add,finish,decline,summary,change,todo,request,"
                  "search,show,update,delete,export,import,help}",
     )
 
@@ -1300,14 +1129,6 @@ def build_parser():
                     help="依頼元のプロジェクト（省略時はカレントディレクトリから推測）")
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_add_todo, is_request=True)
-
-    p = add_sub.add_parser(
-        "message", help="他プロジェクトへの連絡を追加（お知らせ・不具合の知らせなど）")
-    p.add_argument("project", help="宛先のプロジェクト")
-    p.add_argument("--from", dest="from_project", default=None, metavar="PROJECT",
-                    help="送信元のプロジェクト（省略時はカレントディレクトリから推測）")
-    p.add_argument("--at", default=None, help=at_help)
-    p.set_defaults(func=cmd_add_message)
 
     finish_p = sub.add_parser("finish", help="TODOを完了にする")
     finish_sub = finish_p.add_subparsers(dest="finish_target", required=True)
@@ -1397,18 +1218,6 @@ def build_parser():
                     help="#id を表示する（finish todoで指定する時など）")
     p.set_defaults(func=cmd_request)
 
-    p = _add_parser_with_hidden_aliases(
-        sub, "message", aliases=["messages"],
-        help="他プロジェクトからの連絡を表示する（--globalで全プロジェクト横断）",
-    )
-    _add_project_arg(p, project_help)
-    p.add_argument("--global", "-g", dest="all_projects", action="store_true",
-                    help="全プロジェクトを横断して表示する（projectとは同時指定不可）")
-    p.add_argument("--all", action="store_true", help="既読分も含めて表示")
-    p.add_argument("--id", dest="show_id", action="store_true",
-                    help="#id を表示する（show messageで指定する時など）")
-    p.set_defaults(func=cmd_message)
-
     search_p = sub.add_parser("search", help="本文にキーワードを含む記録を横断検索")
     search_sub = search_p.add_subparsers(dest="search_target", required=True,
                                           metavar="{summary,change,todo,all}")
@@ -1427,7 +1236,7 @@ def build_parser():
                         help="全プロジェクトを横断して検索する（projectとは同時指定不可）")
         p.set_defaults(func=cmd_search, kind=kind)
 
-    show_p = sub.add_parser("show", help="SUMMARY/CHANGES/MESSAGEを1件だけ表示する")
+    show_p = sub.add_parser("show", help="SUMMARY/CHANGESを1件だけ表示する")
     show_sub = show_p.add_subparsers(dest="show_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1436,13 +1245,7 @@ def build_parser():
         p.add_argument("id", type=int)
         p.set_defaults(func=cmd_show, kind=kind)
 
-    p = show_sub.add_parser(
-        "message", help="指定idのmessageを1件表示（未読なら既読にする）")
-    _add_project_arg(p, project_help)
-    p.add_argument("id", type=int)
-    p.set_defaults(func=cmd_show_message)
-
-    update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODO/MESSAGEの本文を書き換える")
+    update_p = sub.add_parser("update", help="SUMMARY/CHANGES/TODOの本文を書き換える")
     update_sub = update_p.add_subparsers(dest="update_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1458,14 +1261,7 @@ def build_parser():
     p.add_argument("--at", default=None, help=at_help)
     p.set_defaults(func=cmd_update_todo)
 
-    p = update_sub.add_parser(
-        "message", help="指定idのMESSAGEの本文を標準入力の内容で置き換える（未読に戻す）")
-    _add_project_arg(p, project_help)
-    p.add_argument("id", type=int)
-    p.add_argument("--at", default=None, help=at_help)
-    p.set_defaults(func=cmd_update_message)
-
-    delete_p = sub.add_parser("delete", help="SUMMARY/CHANGES/TODO/MESSAGEを削除する")
+    delete_p = sub.add_parser("delete", help="SUMMARY/CHANGES/TODOを削除する")
     delete_sub = delete_p.add_subparsers(dest="delete_target", required=True)
 
     for name, kind in [("summary", "summary"), ("change", "change")]:
@@ -1478,11 +1274,6 @@ def build_parser():
     _add_project_arg(p, project_help)
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_delete_todo)
-
-    p = delete_sub.add_parser("message", help="指定idのMESSAGEを削除する")
-    _add_project_arg(p, project_help)
-    p.add_argument("id", type=int)
-    p.set_defaults(func=cmd_delete_message)
 
     p = sub.add_parser("export", help="プロジェクトのデータをJSON形式で書き出す（省略時は全プロジェクト）")
     _add_project_arg(p, "省略時は全プロジェクトを対象にする（CWD自動推測はしない）")

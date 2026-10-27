@@ -12,8 +12,6 @@ collog add change [project] [--at 日時]    # 標準入力の内容をCHANGES�
 collog add todo [project] [--at 日時]      # 標準入力の内容をTODOとして追加
 collog add request <project> [--from <source_project>] [--at 日時]
                                            # 他プロジェクトからの依頼としてTODOに追加
-collog add message <project> [--from <source_project>] [--at 日時]
-                                           # 他プロジェクトへの連絡を追加（お知らせ・不具合の知らせなど）
 collog finish todo [project] <id> [--at 日時]  # 指定TODOを完了にする
 collog decline todo [project] <id> [--at 日時]  # 指定TODOを見送りにする（理由は標準入力から）
 
@@ -24,16 +22,14 @@ collog change [project] [-n] [--sort created_at|id] [--asc|--desc] [-r] [--id]
 collog todo [project] [--all] [--id]      # TODO一覧（既定は未完了のみ、requestも含む）
 collog request [project] [--global|-g] [--all] [--id]
                                            # 他プロジェクトからの依頼を表示（既定は自分宛て、-gで全プロジェクト横断）
-collog message [project] [--global|-g] [--all] [--id]
-                                           # 他プロジェクトからの連絡を表示（既定は自分宛て、-gで全プロジェクト横断）
 
 collog search summary|change|todo|all <keyword> [project] [--global|-g]
                                            # 本文にkeywordを含む記録を検索（既定はカレントディレクトリのプロジェクトのみ）
-collog show summary|change|message [project] <id>
-                                           # SUMMARY/CHANGES/MESSAGEを1件だけ表示（messageは未読なら既読にする）
+collog show summary|change [project] <id>
+                                           # SUMMARY/CHANGESを1件だけ表示
 
-collog update summary|change|todo|message [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
-collog delete summary|change|todo|message [project] <id>              # 削除
+collog update summary|change|todo [project] <id> [--at 日時]  # 本文を標準入力の内容で置き換え
+collog delete summary|change|todo [project] <id>              # 削除
 
 collog export [project]                   # データをJSON形式で書き出す（省略時は全プロジェクト）
 collog import [--safety]                  # 標準入力のJSON（exportの出力形式）を取り込む
@@ -45,7 +41,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `[project]`省略時、カレントディレクトリを登録済み`projects.path`と完全一致する場合のみ推測する（配下のサブディレクトリは対象外）
 - 該当なしかつ`project`も省略の場合はエラー（明示的な指定を促すメッセージ。`collog init`は提案しない）
-- 対象外: `summary`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`/`add message`の`project`（宛先）
+- 対象外: `summary`の`project`省略（下記参照。全プロジェクト横断の意味になる）、`add request`の`project`（宛先）
 - `[project]`の代わりに`--path <dir>`でディレクトリから指定できる（登録パスと完全一致のみ。見つからなければエラー。`project`との同時指定は不可）
 
 ## summary・change の表示
@@ -67,7 +63,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `change`と同様、横断表示は持たない（`project`省略時はCWD自動推測）
 - `decline todo [project] <id>`でTODOを「見送り」にできる（完了とは別の終了状態。理由は標準入力から受け取り必須）。デフォルトの一覧からは外れ、`--all`で見出しに`(見送り: 理由)`付きで表示。`finish`/`decline`は互いに排他（どちらか片方のみ、やり直し不可）。`request`にも使える
 
-## #id表示（summary/change/todo/request/message共通）
+## #id表示（summary/change/todo/request共通）
 
 - 既定では非表示、`--id`を付けた時だけ表示
 
@@ -88,19 +84,11 @@ collog help [command...]                  # サブコマンドのヘルプを表
 - `request`でrequestだけに絞り込み（既定は自分宛て）。`--global`/`-g`で全プロジェクトの未完了requestをプロジェクトごとに横断表示（他プロジェクトへの依頼の対応漏れチェック用）
 - 完了操作は通常のtodoと同じ`finish todo`
 
-## message（他プロジェクトへの連絡）
-
-- `add message <project> [--from <source_project>]`で他プロジェクトへの連絡（お知らせ・不具合の知らせなど）を記録
-- `request`（依頼・実装を求める）とは別の種類。`project`（宛先）は明示必須、`--from`（送信元）は省略するとカレントディレクトリから推測
-- `message`で表示（既定は自分宛ての未読のみ、`--all`で既読分も含む）。`--global`/`-g`で全プロジェクトをプロジェクトごとに横断表示
-- 既読にする操作は`show message <project> <id>`（1件を表示すると同時に既読になる。専用の既読コマンドは無い）
-
 ## update/delete（訂正・削除）
 
-- `update summary|change|todo|message [project] <id> [--at 日時]`で本文を標準入力の内容に置き換え
-- `delete summary|change|todo|message [project] <id>`で削除
-- `project`は記録先（request・messageは宛先）。送信元が取り下げる場合も宛先を指定する
-- `update message`は既読を未読に戻す（書き換え後の内容を受信側に再度見せるため）
+- `update summary|change|todo [project] <id> [--at 日時]`で本文を標準入力の内容に置き換え
+- `delete summary|change|todo [project] <id>`で削除
+- `project`は記録先（requestは宛先）。送信元が取り下げる場合も宛先を指定する
 - `update`は`add`と同様、見出しレベル制約（`#`/`##`禁止）を検証
 - `project`/`kind`/`id`の組み合わせが一致しない場合はエラー
 
@@ -108,7 +96,7 @@ collog help [command...]                  # サブコマンドのヘルプを表
 
 - `export [project]`（省略時は全プロジェクト）でJSON形式に書き出し
 - `import`で標準入力から取り込み（デフォルトは`INSERT OR REPLACE`、`--safety`でエラー中断に切り替え）
-- `entries`/`todos`/`messages`は元の`id`があれば上書き、無ければ自動採番で新規追加
+- `entries`/`todos`は元の`id`があれば上書き、無ければ自動採番で新規追加
 - `projects`も`name`が既存なら上書き（`path`が異なる環境へ移行した場合はimport後に`init`で設定し直す）
 - `--safety`指定時は`id`/`name`の重複でエラー中断し、import全体をロールバック
 - 未登録のプロジェクトはexport内の`path`で自動`init`
